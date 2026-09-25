@@ -29,11 +29,26 @@ def log(msg):
 
 
 def build_split(split: str, args, cache: Path):
-    """Normalise, block and compute cheap scores for one split; everything is cached."""
+    """Normalise, block and compute cheap scores for one split; everything is cached.
+
+    With --drop-s1 q (train only) a random share q of S1 records is removed before blocking.
+    Their S2/S3 copies stay, now without an owner, which reproduces the test set's larger
+    pool of S2/S3 records per S1 record (5.75 vs 4.67 in train)."""
     norm_path = cache / f"{split}_norm.parquet"
     if not norm_path.exists():
         prep.prepare_split(args.data_dir, split, cache)
         gc.collect()
+    if split == "train" and args.drop_s1 > 0:
+        full, split = norm_path, f"train_drop{int(round(args.drop_s1 * 100))}"
+        norm_path = cache / f"{split}_norm.parquet"
+        if not norm_path.exists():
+            df = pl.read_parquet(full)
+            s1 = df.filter(pl.col("src") == 1)["rid"]
+            gone = s1.sample(fraction=args.drop_s1, seed=SEED + 7)
+            (df.filter(~pl.col("rid").is_in(gone.implode())).drop("rid").with_row_index("rid")
+               .write_parquet(norm_path))
+            del df
+            gc.collect()
     pairs_path = cache / f"{split}_pairs.parquet"
     if not pairs_path.exists():
         cols = ["rid", "src", "country", "core", "name_compact", "addr_nums", "addr_words"]
@@ -128,6 +143,8 @@ def main():
     ap.add_argument("--cap-s1", type=int, default=6)
     ap.add_argument("--cap-r", type=int, default=40)
     ap.add_argument("--max-per-s1", type=int, default=30)
+    ap.add_argument("--drop-s1", type=float, default=0.0,
+                    help="hide this share of train S1 records (test-like conditions)")
     ap.add_argument("--skip-test", action="store_true")
     ap.add_argument("--log", default="../../experiments/log.csv")
     ap.add_argument("--note", default="")
