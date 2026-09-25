@@ -58,20 +58,24 @@ def apply(scored: pl.DataFrame, cfg: dict) -> pl.DataFrame:
 
 
 def tune(scored: pl.DataFrame, truth: pl.DataFrame, s1: pl.Series, verbose=True):
-    """Grid search on out-of-fold probabilities with the exact metric."""
-    grid = []
-    for oo in (True, False):
-        for gamma, floor in itertools.product((0.7, 1.0, 1.4, 2.0), (0.0, 0.1)):
-            grid.append({"method": "expected_f", "one_owner": oo, "gamma": gamma, "floor": floor})
-        for t, rel in itertools.product(np.round(np.arange(0.2, 0.91, 0.1), 2), (0.0, 0.3, 0.6)):
-            grid.append({"method": "threshold", "one_owner": oo, "t": float(t), "rel": rel})
+    """Grid search with the exact metric. `scored` may hold every pair of the split (so the
+    one-owner rule sees all competitors); only the S1 records in `s1` are evaluated."""
     res = []
-    for cfg in grid:
-        res.append((macro_f05(apply(scored, cfg), truth, s1), cfg))
+    keep = pl.col("i").is_in(s1.implode())
+    for oo in (True, False):
+        base = (one_owner(scored) if oo else scored).filter(keep)
+        grid = [{"method": "expected_f", "one_owner": oo, "gamma": g, "floor": f}
+                for g, f in itertools.product((0.7, 1.0, 1.4, 2.0), (0.0, 0.1, 0.2))]
+        grid += [{"method": "threshold", "one_owner": oo, "t": float(t), "rel": rel}
+                 for t, rel in itertools.product(np.round(np.arange(0.3, 0.91, 0.1), 2), (0.0, 0.5))]
+        for cfg in grid:
+            sel = (threshold(base, cfg["t"], cfg["rel"]) if cfg["method"] == "threshold"
+                   else expected_f(base, cfg["gamma"], cfg["floor"]))
+            res.append((macro_f05(sel.select("i", "j"), truth, s1), cfg))
     res.sort(key=lambda x: -x[0])
     if verbose:
         for m in ("expected_f", "threshold"):
             for oo in (True, False):
                 sc, c = next(x for x in res if x[1]["method"] == m and x[1]["one_owner"] == oo)
-                print(f"    {m:<10} one_owner={oo!s:<5} F0.5={sc:.4f} {c}")
+                print(f"    {m:<10} one_owner={oo!s:<5} F0.5={sc:.4f} {c}", flush=True)
     return res[0]

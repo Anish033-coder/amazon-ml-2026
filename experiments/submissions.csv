@@ -1,2 +1,2 @@
 tag,time,commit,file,note,lb_public
-v1,2026-09-25 15:28,b574239,submissions/v1_matching_results.tsv.gz,"key blocking + LGBM 10% sample, OOF 0.9572",
+v1,2026-09-25 15:28,b574239,submissions/v1_matching_results.tsv.gz,"key blocking + LGBM 10% sample, OOF 0.9572",0.929

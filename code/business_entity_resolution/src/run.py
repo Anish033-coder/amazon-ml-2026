@@ -19,7 +19,7 @@ import numpy as np
 import polars as pl
 from sklearn.model_selection import GroupKFold
 
-from . import block, decide, pairfeat, prep
+from . import block, decide, pairfeat, prep, stage2
 
 SEED = 42
 
@@ -72,12 +72,57 @@ def write_lists(path: Path, s1: pl.DataFrame, pairs: pl.DataFrame, ids: pl.DataF
     out.write_csv(path, separator="\t", quote_style="never", line_terminator="\n")
 
 
+def fit_cv(X, y, groups, args, tag):
+    """Grouped K-fold (by S1 record): out-of-fold predictions plus a model fit on everything."""
+    oof, iters = np.zeros(len(y)), []
+    for k, (a, b) in enumerate(GroupKFold(n_splits=args.folds).split(X, y, groups)):
+        m = lgb.train(lgb_params(args), lgb.Dataset(X[a], y[a]), 3000,
+                      valid_sets=[lgb.Dataset(X[b], y[b])], callbacks=[lgb.early_stopping(50, verbose=False)])
+        oof[b] = m.predict(X[b], num_iteration=m.best_iteration)
+        iters.append(m.best_iteration)
+        log(f"{tag} fold {k}: best_iter={m.best_iteration}")
+    model = lgb.train(lgb_params(args), lgb.Dataset(X, y), int(np.mean(iters) * 1.1))
+    return oof, model
+
+
+def score_pairs(norm_path, cheap_path, model, cols, step=3_000_000) -> pl.DataFrame:
+    """Stage-1 probability p1 for every candidate pair of a split, chunk by chunk."""
+    rec = pairfeat.record_table(norm_path)
+    n = pl.scan_parquet(cheap_path).select(pl.len()).collect().item()
+    out = []
+    for s in range(0, n, step):
+        f = pairfeat.full_features(rec, pl.scan_parquet(cheap_path).slice(s, step).collect())
+        out.append(f.select("i", "j").with_columns(
+            pl.Series("p1", model.predict(f.select(cols).to_numpy().astype(np.float32))).cast(pl.Float32)))
+        del f
+        gc.collect()
+    log(f"  stage-1 scored {n:,} pairs")
+    return pl.concat(out)
+
+
+def predict_frame(model, frame: pl.DataFrame, cols, step=5_000_000) -> np.ndarray:
+    return np.concatenate([model.predict(frame.slice(s, step).select(cols).to_numpy().astype(np.float32))
+                           for s in range(0, len(frame), step)])
+
+
+def with_oof(all_pairs: pl.DataFrame, sample: pl.DataFrame, col: str) -> pl.DataFrame:
+    """Replace in-sample predictions of the training sample by their out-of-fold values."""
+    return (all_pairs.join(sample.rename({col: "_oof"}), on=["i", "j"], how="left")
+                     .with_columns(pl.coalesce("_oof", col).alias(col)).drop("_oof"))
+
+
+def label(frame: pl.DataFrame, truth: pl.DataFrame) -> np.ndarray:
+    return (frame.select("i", "j").join(truth.with_columns(pl.lit(1, pl.Int8).alias("y")), on=["i", "j"],
+                                        how="left", maintain_order="left")["y"].fill_null(0).to_numpy())
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data-dir", required=True)
     ap.add_argument("--cache-dir", default="../../cache")
     ap.add_argument("--out-dir", default="../../output")
-    ap.add_argument("--sample-frac", type=float, default=0.1, help="share of train S1 records used for the model")
+    ap.add_argument("--frac-a", type=float, default=0.2, help="share of train S1 records for the stage-1 model")
+    ap.add_argument("--frac-b", type=float, default=0.2, help="share of train S1 records for the stage-2 model")
     ap.add_argument("--folds", type=int, default=3)
     ap.add_argument("--lr", type=float, default=0.1)
     ap.add_argument("--cap-s1", type=int, default=6)
@@ -91,79 +136,77 @@ def main():
     cache = Path(args.cache_dir)
     cache.mkdir(parents=True, exist_ok=True)
 
-    # ---------------- train: full features on a sample of S1 records, grouped CV
+    # ---------------- train, stage 1: pair model on sample A of S1 records
     norm_path, cheap_path = build_split("train", args, cache)
     truth = truth_rid(norm_path, args.data_dir)
     meta = pl.read_parquet(norm_path, columns=["rid", "src", "country"]).filter(pl.col("src") == 1)
     rep = block.recall_report(pl.read_parquet(cheap_path, columns=["i", "j"]), truth, len(meta))
     log(f"blocking: {rep}")
-    s1 = meta["rid"].sample(fraction=args.sample_frac, seed=SEED).sort()
-    sub = pl.scan_parquet(cheap_path).filter(pl.col("i").is_in(s1.implode())).collect()
+    s1_a = meta["rid"].sample(fraction=args.frac_a, seed=SEED).sort()
     rec = pairfeat.record_table(norm_path)
-    feats = pairfeat.full_features(rec, sub)
-    del rec, sub
-    gc.collect()
-    y = (feats.select("i", "j").join(truth.with_columns(pl.lit(1, pl.Int8).alias("y")), on=["i", "j"],
-                                     how="left", maintain_order="left")["y"].fill_null(0).to_numpy())
+    feats = pairfeat.full_features(rec, pl.scan_parquet(cheap_path).filter(pl.col("i").is_in(s1_a.implode())).collect())
+    del rec
     cols = pairfeat.feature_columns(feats)
-    X = feats.select(cols).to_numpy().astype(np.float32)
-    groups = feats["i"].to_numpy()
-    scored = feats.select("i", "j")
+    X, y = feats.select(cols).to_numpy().astype(np.float32), label(feats, truth)
+    keys_a = feats.select("i", "j")
     del feats
     gc.collect()
-    log(f"model data: {len(X):,} pairs from {len(s1):,} S1 records, {y.mean():.3f} positive, {len(cols)} features")
+    log(f"stage 1: {len(X):,} pairs from {len(s1_a):,} S1 records, {y.mean():.3f} positive, {len(cols)} features")
+    oof1, model1 = fit_cv(X, y, keys_a["i"].to_numpy(), args, "stage 1")
+    model1.save_model(str(cache / "model1.txt"))
+    del X, y
+    gc.collect()
+    p1 = with_oof(score_pairs(norm_path, cheap_path, model1, cols), keys_a.with_columns(pl.Series("p1", oof1).cast(pl.Float32)), "p1")
 
-    oof, iters = np.zeros(len(y)), []
-    for k, (a, b) in enumerate(GroupKFold(n_splits=args.folds).split(X, y, groups)):
-        m = lgb.train(lgb_params(args), lgb.Dataset(X[a], y[a]), 3000,
-                      valid_sets=[lgb.Dataset(X[b], y[b])], callbacks=[lgb.early_stopping(50, verbose=False)])
-        oof[b] = m.predict(X[b], num_iteration=m.best_iteration)
-        iters.append(m.best_iteration)
-        log(f"fold {k}: best_iter={m.best_iteration}")
-    scored = scored.with_columns(pl.Series("p", oof))
-    scored.write_parquet(cache / "train_oof.parquet")
-    truth_s = truth.filter(pl.col("i").is_in(s1.implode()))
-    best_score, best_cfg = decide.tune(scored, truth_s, s1)
-    log(f"OOF macro F0.5 = {best_score:.4f} with {best_cfg}")
-    pred = decide.apply(scored, best_cfg)
+    # ---------------- train, stage 2: competition + sibling features on sample B
+    f2 = stage2.build(p1, cheap_path, norm_path)
+    del p1
+    cols2 = stage2.columns(f2)
+    s1_b = meta["rid"].sample(fraction=args.frac_b, seed=SEED + 1).sort()
+    fb = f2.filter(pl.col("i").is_in(s1_b.implode()))
+    X2, y2 = fb.select(cols2).to_numpy().astype(np.float32), label(fb, truth)
+    log(f"stage 2: {len(X2):,} pairs from {len(s1_b):,} S1 records, {len(cols2)} features")
+    oof2, model2 = fit_cv(X2, y2, fb["i"].to_numpy(), args, "stage 2")
+    model2.save_model(str(cache / "model2.txt"))
+    scored = with_oof(f2.select("i", "j", "p1").with_columns(pl.Series("p", predict_frame(model2, f2, cols2))),
+                      fb.select("i", "j").with_columns(pl.Series("p", oof2)), "p")
+    del f2, fb, X2, y2
+    gc.collect()
+    truth_b = truth.filter(pl.col("i").is_in(s1_b.implode()))
+    log("decision on stage-1 probabilities (for comparison):")
+    s1_score, _ = decide.tune(scored.select("i", "j", pl.col("p1").alias("p")), truth_b, s1_b)
+    log("decision on stage-2 probabilities:")
+    best_score, best_cfg = decide.tune(scored.select("i", "j", "p"), truth_b, s1_b)
+    log(f"OOF macro F0.5: stage 1 = {s1_score:.4f}, stage 2 = {best_score:.4f} with {best_cfg}")
+    pred = decide.apply(scored.select("i", "j", "p"), best_cfg)
     for c in meta["country"].unique().sort():
-        ids = meta.filter((pl.col("country") == c) & pl.col("rid").is_in(s1.implode()))["rid"]
-        log(f"  country={c:<8} F0.5={decide.macro_f05(pred, truth_s, ids):.4f}")
-
-    model = lgb.train(lgb_params(args), lgb.Dataset(X, y), int(np.mean(iters) * 1.1))
-    model.save_model(str(cache / "model.txt"))
-    (cache / "decision.json").write_text(json.dumps({"cfg": best_cfg, "cols": cols}))
-    imp = sorted(zip(model.feature_importance("gain"), cols), reverse=True)[:15]
-    log("top features: " + ", ".join(c for _, c in imp))
-    del X, y, groups, truth, scored
+        ids = meta.filter((pl.col("country") == c) & pl.col("rid").is_in(s1_b.implode()))["rid"]
+        log(f"  country={c:<8} F0.5={decide.macro_f05(pred.filter(pl.col('i').is_in(ids.implode())), truth_b, ids):.4f}")
+    (cache / "decision.json").write_text(json.dumps({"cfg": best_cfg, "cols": cols, "cols2": cols2}))
+    imp = sorted(zip(model2.feature_importance("gain"), cols2), reverse=True)[:10]
+    log("stage-2 top features: " + ", ".join(c for _, c in imp))
+    del scored, pred, truth
     gc.collect()
 
     row = {"time": time.strftime("%Y-%m-%d %H:%M"), "note": args.note, **rep,
-           "sample_frac": args.sample_frac, "oof_f05": round(best_score, 4),
+           "sample_frac": f"{args.frac_a}/{args.frac_b}", "oof_f05": round(best_score, 4),
            "decision": json.dumps(best_cfg), "lb_public": ""}
     try:
         row["commit"] = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], text=True).strip()
     except Exception:
         row["commit"] = ""
 
-    # ---------------- test: score every candidate pair, chunk by chunk
+    # ---------------- test
     if not args.skip_test:
         tnorm_path, tcheap_path = build_split("test", args, cache)
-        rec = pairfeat.record_table(tnorm_path)
-        n = pl.scan_parquet(tcheap_path).select(pl.len()).collect().item()
-        ps, step = [], 3_000_000
-        for s in range(0, n, step):
-            chunk = pl.scan_parquet(tcheap_path).slice(s, step).collect()
-            f = pairfeat.full_features(rec, chunk)
-            ps.append(f.select("i", "j").with_columns(
-                pl.Series("p", model.predict(f.select(cols).to_numpy().astype(np.float32)))))
-            del f, chunk
-            gc.collect()
-            log(f"  scored {min(s + step, n):,}/{n:,} test pairs")
-        del rec
-        tscored = pl.concat(ps)
+        tp1 = score_pairs(tnorm_path, tcheap_path, model1, cols)
+        tf2 = stage2.build(tp1, tcheap_path, tnorm_path)
+        del tp1
+        tscored = tf2.select("i", "j", "p1").with_columns(pl.Series("p", predict_frame(model2, tf2, cols2)))
+        del tf2
+        gc.collect()
         tscored.write_parquet(cache / "test_scored.parquet")
-        matches = decide.apply(tscored, best_cfg)
+        matches = decide.apply(tscored.select("i", "j", "p"), best_cfg)
         tmeta = pl.read_parquet(tnorm_path, columns=["rid", "entity_id", "src", "country"])
         ts1 = tmeta.filter(pl.col("src") == 1)
         out = Path(args.out_dir)
@@ -174,7 +217,7 @@ def main():
                   .join(matches.group_by("i").len("n"), on="i", how="left").fill_null(0))
         for r in per.group_by("country").agg(pl.col("n").mean(), (pl.col("n") == 0).mean().alias("e")).sort("country").iter_rows():
             log(f"  test country={r[0]:<8} avg matches={r[1]:.2f} empty share={r[2]:.3f}")
-        row["test_cands_per_s1"] = round(n / len(ts1), 2)
+        row["test_cands_per_s1"] = round(len(tscored) / len(ts1), 2)
         log(f"wrote {out / 'matching_results.tsv'} and {out / 'candidate_pairs.tsv'}")
 
     Path(args.log).parent.mkdir(parents=True, exist_ok=True)
