@@ -3,3 +3,4 @@ time,commit,note,pair_recall,all_found_share,cands_per_s1,sample_frac,oof_f05,de
 2026-09-25 16:18,af6fe90,"v2: two-stage (competition + sibling features), 20%/20% samples",0.942,0.8391,25.34,0.2/0.2,0.9608,"{""method"": ""expected_f"", ""one_owner"": true, ""gamma"": 1.0, ""floor"": 0.2}",25.95,
 2026-09-25 17:08,4f511e6,"v3: + difference features, translit fixes",0.9423,0.8394,25.36,0.2/0.2,0.9657,"{""method"": ""expected_f"", ""one_owner"": true, ""gamma"": 1.0, ""floor"": 0.2}",25.96,
 2026-09-25 18:18,46f7d80,v5: v3 + house-number offset features,0.9423,0.8394,25.36,0.2/0.2,0.9686,"{""method"": ""expected_f"", ""one_owner"": true, ""gamma"": 1.0, ""floor"": 0.2}",25.96,
+2026-09-25 19:12,b4db8c3,v6: v5 + blocking v6 (ceiling 0.985) + acronym/token-count features,0.9567,0.8673,32.87,0.2/0.2,0.9766,"{""method"": ""expected_f"", ""one_owner"": true, ""gamma"": 1.0, ""floor"": 0.0}",33.8,

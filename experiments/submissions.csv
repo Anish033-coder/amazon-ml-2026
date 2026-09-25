@@ -4,3 +4,4 @@ probe-nofrance,2026-09-25 15:59,d11ed6b,submissions/probe-nofrance_matching_resu
 v2,2026-09-25 16:33,24c21d2,submissions/v2_matching_results.tsv.gz,"two-stage, 20/20 samples, OOF 0.9608",
 v3,2026-09-25 17:23,e227569,submissions/v3_matching_results.tsv.gz,"two-stage + difference features + translit fixes, OOF 0.9657",
 v5,2026-09-25 18:30,46f7d80,submissions/v5_matching_results.tsv.gz,"v3 + house-number offset features, OOF 0.9686",
+v6,2026-09-25 19:31,b4db8c3,submissions/v6_matching_results.tsv.gz,"v5 + blocking v6 (train ceiling 0.985) + acronym/token counts, OOF 0.9766",
