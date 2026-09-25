@@ -6,3 +6,5 @@ v3,2026-09-25 17:23,e227569,submissions/v3_matching_results.tsv.gz,"two-stage + 
 v5,2026-09-25 18:30,46f7d80,submissions/v5_matching_results.tsv.gz,"v3 + house-number offset features, OOF 0.9686",
 v6,2026-09-25 19:31,b4db8c3,submissions/v6_matching_results.tsv.gz,"v5 + blocking v6 (train ceiling 0.985) + acronym/token counts, OOF 0.9766",0.961
 v6-strict,2026-09-25 19:52,b4db8c3,submissions/v6-strict_matching_results.tsv.gz,"probe: v6 probabilities, stricter decision gamma 2.5 floor 0.4 (train -0.002)",0.963
+v7,2026-09-25 21:23,97b761a,submissions/v7_matching_results.tsv.gz,"blocking v7 (ceiling 0.988), OOF 0.9794",
+v7-strict,2026-09-25 21:23,97b761a,submissions/v7-strict_matching_results.tsv.gz,"v7 probabilities, strict decision gamma 2.5 floor 0.4",
