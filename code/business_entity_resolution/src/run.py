@@ -57,8 +57,22 @@ def build_split(split: str, args, cache: Path):
         gc.collect()
     cheap_path = cache / f"{split}_cheap.parquet"
     if not cheap_path.exists():
-        pairfeat.cheap_scores(norm_path, pl.read_parquet(pairs_path), cap=args.max_per_s1).write_parquet(cheap_path)
-        gc.collect()
+        # one country at a time: a pair's S1 and S2/S3 records always share the country, so the
+        # per-S1 cut and the rank features are identical, and peak memory is roughly halved
+        ctry = pl.read_parquet(norm_path, columns=["rid", "country"])
+        parts = []
+        for c in ctry["country"].unique().sort():
+            ids = ctry.filter(pl.col("country") == c)["rid"]
+            pc = pl.scan_parquet(pairs_path).filter(pl.col("i").is_in(ids.implode())).collect()
+            if len(pc):
+                part = cache / f"{split}_cheap_{c}.parquet"
+                pairfeat.cheap_scores(norm_path, pc, cap=args.max_per_s1).write_parquet(part)
+                parts.append(part)
+            del pc
+            gc.collect()
+        pl.concat([pl.scan_parquet(x) for x in parts]).sink_parquet(cheap_path)
+        for x in parts:
+            x.unlink()
     log(f"{split}: normalised, blocked, cheap-scored")
     return norm_path, cheap_path
 
@@ -238,7 +252,7 @@ def main():
 
     # ---------------- train, stage 2: competition + sibling features on sample B
     f2_path = cache / "train_f2.parquet"
-    stage2.build(p1, cheap_path, norm_path).write_parquet(f2_path)
+    stage2.build(p1, cheap_path, norm_path, f2_path)
     del p1
     gc.collect()
     cols2 = [c for c in pl.read_parquet_schema(f2_path) if c not in ("i", "j")]
@@ -283,7 +297,7 @@ def main():
         tnorm_path, tcheap_path = build_split("test", args, cache)
         tp1 = score_pairs(tnorm_path, tcheap_path, model1, cols, rates)
         tf2_path = cache / "test_f2.parquet"
-        stage2.build(tp1, tcheap_path, tnorm_path).write_parquet(tf2_path)
+        stage2.build(tp1, tcheap_path, tnorm_path, tf2_path)
         del tp1
         gc.collect()
         tscored = predict_parquet(model2, tf2_path, cols2)
