@@ -30,6 +30,41 @@ def token_freqs(norm_path) -> dict:
     return out
 
 
+def learn_added_word_rates(norm_path, cheap_path, truth: pl.DataFrame, s1_ids: pl.Series,
+                           min_n: int = 50) -> pl.DataFrame:
+    """Match rate of each word that an S2/S3 name *adds* to its S1 name, learned from the
+    training labels of S1 records the models never train on. On train, 'svc'/'ctr' additions
+    match ~36% of the time, honorifics ('dr', 'shri') ~57%, and every other added word
+    ('grp', 'hldg', 'west', 'tech', ...) 0%: those mark sister businesses."""
+    from .normalize import LEGAL
+    c = (pl.scan_parquet(cheap_path).select("i", "j", "c_name")
+           .filter(pl.col("i").is_in(s1_ids.implode()) & (pl.col("c_name") >= 60)).collect())
+    core = pl.read_parquet(norm_path, columns=["rid", "core"])
+    c = (c.join(core.rename({"rid": "i", "core": "ci"}), on="i").join(core.rename({"rid": "j", "core": "cj"}), on="j")
+          .join(truth.with_columns(pl.lit(1, pl.Int8).alias("y")), on=["i", "j"], how="left")
+          .with_columns(pl.col("y").fill_null(0),
+                        pl.col("cj").list.set_difference("ci").list.eval(
+                            pl.element().filter(~pl.element().is_in(list(LEGAL)))).alias("w")))
+    w = c.select("w", "y").explode("w").drop_nulls("w")
+    return (w.group_by("w").agg(pl.len().alias("n"), pl.col("y").mean().cast(pl.Float32).alias("rate"))
+             .filter(pl.col("n") >= min_n).rename({"w": "tok"}))
+
+
+def _added_word_stats(added: pl.Series, dropped: pl.Series, rates: pl.DataFrame) -> pl.DataFrame:
+    """min / max learned match rate of the words an S2/S3 name adds. A word never seen in
+    training that is *purely added* (nothing dropped) is treated like the sister qualifiers
+    (rate 0), which is what every non-noise added word is on train; when a word is replaced
+    instead (possibly a typo) an unseen word stays unknown for the typo features to judge."""
+    k = pl.int_range(len(added), dtype=pl.UInt32, eager=True).alias("k")
+    pure = pl.DataFrame([k, (dropped.list.len() == 0).alias("pure")])
+    e = pl.DataFrame([k, added.alias("tok")]).explode("tok").drop_nulls("tok")
+    e = (e.join(rates.select("tok", "rate"), on="tok", how="left").join(pure, on="k")
+          .with_columns(pl.when(pl.col("rate").is_null() & pl.col("pure")).then(0.0).otherwise(pl.col("rate")).alias("rate")))
+    m = e.group_by("k").agg(pl.col("rate").min().alias("add_rate_min"), pl.col("rate").max().alias("add_rate_max"),
+                            pl.col("rate").is_null().sum().cast(pl.Int8).alias("add_unknown"))
+    return pl.DataFrame([k]).join(m, on="k", how="left", maintain_order="left").drop("k")
+
+
 def _freq_stats(lists: pl.Series, freq: pl.DataFrame, tag: str) -> pl.DataFrame:
     """max / min log-frequency of the tokens in each list (null when the list is empty)."""
     k = pl.int_range(len(lists), dtype=pl.UInt32, eager=True).alias("k")
@@ -90,9 +125,10 @@ def cheap_scores(norm_path, pairs: pl.DataFrame, cap: int = 40, chunk: int = 5_0
     return p.with_columns(ex)
 
 
-def full_features(rec: pl.DataFrame, pairs: pl.DataFrame, tf: dict, chunk: int = 2_000_000) -> pl.DataFrame:
+def full_features(rec: pl.DataFrame, pairs: pl.DataFrame, tf: dict, rates: pl.DataFrame = None,
+                  chunk: int = 2_000_000) -> pl.DataFrame:
     """pairs must carry the cheap_scores columns; returns them plus the full feature set.
-    tf: token_freqs() of the same split."""
+    tf: token_freqs() of the same split; rates: learn_added_word_rates() from train."""
     outs = []
     for s in range(0, len(pairs), chunk):
         p = pairs.slice(s, chunk)
@@ -179,7 +215,8 @@ def full_features(rec: pl.DataFrame, pairs: pl.DataFrame, tf: dict, chunk: int =
         diff["u_extra_r"] = dw["u_db"].list.len().cast(pl.Int8).to_numpy()
         fz_diff = pl.concat([pl.DataFrame(diff),
                              _freq_stats(dw["n_da"], tf["name"], "n_extra_s1"), _freq_stats(dw["n_db"], tf["name"], "n_extra_r"),
-                             _freq_stats(dw["w_da"], tf["addr"], "w_extra_s1"), _freq_stats(dw["w_db"], tf["addr"], "w_extra_r")],
+                             _freq_stats(dw["w_da"], tf["addr"], "w_extra_s1"), _freq_stats(dw["w_db"], tf["addr"], "w_extra_r")]
+                            + ([_added_word_stats(dw["n_db"], dw["n_da"], rates)] if rates is not None else []),
                             how="horizontal")
         extra = pl.DataFrame({
             "src3": (R["src"] == 3).cast(pl.Int8),

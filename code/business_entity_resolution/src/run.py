@@ -100,13 +100,13 @@ def fit_cv(X, y, groups, args, tag):
     return oof, model
 
 
-def score_pairs(norm_path, cheap_path, model, cols, step=3_000_000) -> pl.DataFrame:
+def score_pairs(norm_path, cheap_path, model, cols, rates=None, step=3_000_000) -> pl.DataFrame:
     """Stage-1 probability p1 for every candidate pair of a split, chunk by chunk."""
     rec, tf = pairfeat.record_table(norm_path), pairfeat.token_freqs(norm_path)
     n = pl.scan_parquet(cheap_path).select(pl.len()).collect().item()
     out = []
     for s in range(0, n, step):
-        f = pairfeat.full_features(rec, pl.scan_parquet(cheap_path).slice(s, step).collect(), tf)
+        f = pairfeat.full_features(rec, pl.scan_parquet(cheap_path).slice(s, step).collect(), tf, rates)
         out.append(f.select("i", "j").with_columns(
             pl.Series("p1", model.predict(f.select(cols).to_numpy().astype(np.float32))).cast(pl.Float32)))
         del f
@@ -160,8 +160,14 @@ def main():
     rep = block.recall_report(pl.read_parquet(cheap_path, columns=["i", "j"]), truth, len(meta))
     log(f"blocking: {rep}")
     s1_a = meta["rid"].sample(fraction=args.frac_a, seed=SEED).sort()
+    s1_b = meta["rid"].sample(fraction=args.frac_b, seed=SEED + 1).sort()
+    # added-word match rates are learned on S1 records outside both model samples
+    s1_c = meta.filter(~pl.col("rid").is_in(s1_a.implode()) & ~pl.col("rid").is_in(s1_b.implode()))["rid"]
+    rates = pairfeat.learn_added_word_rates(norm_path, cheap_path, truth, s1_c)
+    rates.write_parquet(cache / "added_word_rates.parquet")
+    log(f"added-word rates: {len(rates):,} words from {len(s1_c):,} held-out S1 records")
     rec, tf = pairfeat.record_table(norm_path), pairfeat.token_freqs(norm_path)
-    feats = pairfeat.full_features(rec, pl.scan_parquet(cheap_path).filter(pl.col("i").is_in(s1_a.implode())).collect(), tf)
+    feats = pairfeat.full_features(rec, pl.scan_parquet(cheap_path).filter(pl.col("i").is_in(s1_a.implode())).collect(), tf, rates)
     del rec, tf
     cols = pairfeat.feature_columns(feats)
     X, y = feats.select(cols).to_numpy().astype(np.float32), label(feats, truth)
@@ -173,13 +179,12 @@ def main():
     model1.save_model(str(cache / "model1.txt"))
     del X, y
     gc.collect()
-    p1 = with_oof(score_pairs(norm_path, cheap_path, model1, cols), keys_a.with_columns(pl.Series("p1", oof1).cast(pl.Float32)), "p1")
+    p1 = with_oof(score_pairs(norm_path, cheap_path, model1, cols, rates), keys_a.with_columns(pl.Series("p1", oof1).cast(pl.Float32)), "p1")
 
     # ---------------- train, stage 2: competition + sibling features on sample B
     f2 = stage2.build(p1, cheap_path, norm_path)
     del p1
     cols2 = stage2.columns(f2)
-    s1_b = meta["rid"].sample(fraction=args.frac_b, seed=SEED + 1).sort()
     fb = f2.filter(pl.col("i").is_in(s1_b.implode()))
     X2, y2 = fb.select(cols2).to_numpy().astype(np.float32), label(fb, truth)
     log(f"stage 2: {len(X2):,} pairs from {len(s1_b):,} S1 records, {len(cols2)} features")
@@ -217,7 +222,7 @@ def main():
     # ---------------- test
     if not args.skip_test:
         tnorm_path, tcheap_path = build_split("test", args, cache)
-        tp1 = score_pairs(tnorm_path, tcheap_path, model1, cols)
+        tp1 = score_pairs(tnorm_path, tcheap_path, model1, cols, rates)
         tf2 = stage2.build(tp1, tcheap_path, tnorm_path)
         del tp1
         tscored = tf2.select("i", "j", "p1").with_columns(pl.Series("p", predict_frame(model2, tf2, cols2)))
