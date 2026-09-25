@@ -144,7 +144,9 @@ def normalize(df: pl.DataFrame, table: dict) -> pl.DataFrame:
                           pl.coalesce("a_fix", "addr_raw").alias("a_src"))
             .drop("n_fix", "a_fix"))
     df = df.with_columns(
-        _clean(pl.col("n_src")).alias("n_clean"),
+        # phone numbers stuck into names ('Cobalt LLC - 5023041431'); names only, since
+        # addresses legitimately hold long digit runs ('14200 -14300', '253-45 147')
+        _clean(pl.col("n_src").str.replace_all(r"\+?\d[\d\s-]{8,}\d", " ")).alias("n_clean"),
         _clean(pl.col("a_src").str.replace_all(r"(?i)\b(?:p\.?\s?o\.?\s*box|pmb|pob)\s*#?\s*\d+", " ")).alias("a_clean"),
         (pl.col("n_src") != pl.col("name_raw")).alias("name_was_indic"))
 

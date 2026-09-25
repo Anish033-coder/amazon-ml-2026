@@ -11,6 +11,8 @@ within its country). Families:
   cnum    : whole name x house number        (common names: the number makes the block small)
   numnum  : pairs of rare numbers            (Indian addresses carry several: '741/3', 'D-61')
   numw6   : house number x 6 rare address words (renamed businesses at the same address)
+  ww      : pairs of rare address words      (renamed businesses without a house number)
+S1 records use more of their tokens than S2/S3 records (asymmetric keys, see _rare).
   compact_e, nn_e : name-only keys restricted to S2/S3 records whose address is empty,
             with looser block limits (these records have nothing else to match on)
 Numbers are reduced to their digits ('2300c' -> '2300') and the rarest ones are used.
@@ -20,7 +22,7 @@ many keys they share and capped per S1 record.
 """
 import polars as pl
 
-FAMILIES = ("compact", "n1", "nn", "nnum", "numw", "nw", "cnum", "numnum", "numw6", "compact_e", "nn_e")
+FAMILIES = ("compact", "n1", "nn", "nnum", "numw", "nw", "cnum", "numnum", "numw6", "ww", "compact_e", "nn_e")
 # per-family (cap_s1, cap_r) overrides; others use the build_candidates defaults
 FAMILY_CAPS = {"compact_e": (8, 30), "nn_e": (8, 30), "cnum": (10, 60)}
 _SHIFT = 1 << 32
@@ -31,12 +33,18 @@ def _hashed_tokens(sub: pl.DataFrame, col: str) -> pl.DataFrame:
                .select("rid", pl.col("tok").hash(seed=11).alias("h")))
 
 
-def _rare(sub: pl.DataFrame, col: str, k: int) -> pl.DataFrame:
-    """rid, h: hashes of the k rarest tokens of each record."""
+def _rare(sub: pl.DataFrame, col: str, k: int, k_s1: int = None) -> pl.DataFrame:
+    """rid, h: hashes of the k rarest tokens of each record. S1 records, which are complete
+    while their S2/S3 copies are often truncated, keep their k_s1 rarest tokens instead, so a
+    word that is rare in a short copy still meets the full record (asymmetric keys)."""
     t = _hashed_tokens(sub, col)
     freq = t.group_by("h").len("df")
-    return (t.join(freq, on="h").sort(["rid", "df"])
-             .group_by("rid", maintain_order=True).head(k).select("rid", "h"))
+    t = (t.join(freq, on="h").sort(["rid", "df"])
+          .with_columns(pl.int_range(pl.len()).over("rid").alias("_r")))
+    if k_s1 is None:
+        return t.filter(pl.col("_r") < k).select("rid", "h")
+    lim = sub.select("rid", pl.when(pl.col("src") == 1).then(k_s1).otherwise(k).alias("_k"))
+    return t.join(lim, on="rid").filter(pl.col("_r") < pl.col("_k")).select("rid", "h")
 
 
 def _pairs_key(a, b, seed, ordered=False):
@@ -73,17 +81,20 @@ def _family_keys(sub, fam, rare_name, rare_addr, nums, rare_addr6=None, nums3=No
         return _pairs_key(nums3, nums3, seed, ordered=True)
     if fam == "numw6":
         return _pairs_key(nums, rare_addr6, seed)
+    if fam == "ww":
+        return _pairs_key(rare_addr, rare_addr, seed, ordered=True)
     raise ValueError(fam)
 
 
 def _country_candidates(sub, cap_s1, cap_r, max_per_s1, k_name, k_addr, k_num, verbose):
     is_s1 = sub.select("rid", (pl.col("src") == 1).alias("s1"))
-    rare_name = _rare(sub, "core", k_name)
-    rare_addr = _rare(sub, "addr_words", k_addr)
-    rare_addr6 = _rare(sub, "addr_words", 6)
+    rare_name = _rare(sub, "core", k_name, k_s1=6)
+    rare_addr = _rare(sub, "addr_words", k_addr, k_s1=8)
+    rare_addr6 = _rare(sub, "addr_words", 6, k_s1=10)
     digits = sub.select("rid", pl.col("addr_nums").list.eval(pl.element().str.extract(r"(\d+)")).alias("num_digits"))
-    nums = _rare(digits.join(sub.select("rid", "country"), on="rid"), "num_digits", k_num)
-    nums3 = _rare(digits.join(sub.select("rid", "country"), on="rid"), "num_digits", 3)
+    digits = digits.join(sub.select("rid", "src"), on="rid")
+    nums = _rare(digits, "num_digits", k_num, k_s1=4)
+    nums3 = _rare(digits, "num_digits", 3, k_s1=4)
     empty_r = sub.filter((pl.col("src") != 1) & (pl.col("addr_words").list.len() == 0)
                          & (pl.col("addr_nums").list.len() == 0)).select("rid")
     codes = []

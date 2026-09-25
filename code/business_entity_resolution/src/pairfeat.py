@@ -73,9 +73,12 @@ def cheap_scores(norm_path, pairs: pl.DataFrame, cap: int = 40, chunk: int = 5_0
             pl.Series("c_addr", _cp(addr.gather(i).to_list(), addr.gather(j).to_list(), fuzz.token_set_ratio))))
     del name, addr
     p = (pl.concat(outs)
-           .with_columns((pl.col("c_name") + pl.col("c_addr") + 5 * pl.col("n_keys").cast(pl.Float32)).alias("_sc"))
+           # an empty address is not evidence against a match: rank those by the name twice
+           .with_columns(pl.when(pl.col("c_addr") <= 0).then(2 * pl.col("c_name")).otherwise(pl.col("c_name") + pl.col("c_addr"))
+                         .alias("_sim"))
+           .with_columns((pl.col("_sim") + 5 * pl.col("n_keys").cast(pl.Float32)).alias("_sc"))
            .sort(["i", "_sc"], descending=[False, True]).group_by("i", maintain_order=True).head(cap)
-           .drop("_sc").with_columns(((pl.col("c_name") + pl.col("c_addr")) / 2).alias("c_combo")))
+           .drop("_sc", "_sim").with_columns(((pl.col("c_name") + pl.col("c_addr")) / 2).alias("c_combo")))
     # competition: how does this pair rank for its S1 record, and for its S2/S3 record?
     ex = [pl.len().over("i").cast(pl.UInt16).alias("n_cand_i"), pl.len().over("j").cast(pl.UInt16).alias("n_cand_j")]
     for c in ("n_keys", "c_name", "c_addr", "c_combo"):
