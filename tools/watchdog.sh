@@ -16,8 +16,11 @@ while kill -0 $pid 2>/dev/null; do
   growth=$(( $(swap_mb) - base ))
   level=$(sysctl -n kern.memorystatus_level)
   disk=$(df -g ~ | tail -1 | awk '{print $4}')
-  if [ "$growth" -gt "$max_growth" ] || [ "$level" -lt "$min_level" ] || [ "$disk" -lt "$min_disk" ]; then
-    echo "$(date '+%H:%M:%S') STOPPED pid $pid: swap_growth=${growth}MB mem_level=${level}% free_disk=${disk}GB" >> $log
+  batt=$(pmset -g batt | grep -o '[0-9]*%' | head -1 | tr -d '%')
+  unplugged=$(pmset -g batt | grep -q "Battery Power" && echo 1 || echo 0)
+  low_batt=$(( unplugged == 1 && batt < 15 ))
+  if [ "$growth" -gt "$max_growth" ] || [ "$level" -lt "$min_level" ] || [ "$disk" -lt "$min_disk" ] || [ "$low_batt" -eq 1 ]; then
+    echo "$(date '+%H:%M:%S') STOPPED pid $pid: swap_growth=${growth}MB mem_level=${level}% free_disk=${disk}GB battery=${batt}% unplugged=${unplugged}" >> $log
     kill $pid
     exit 1
   fi

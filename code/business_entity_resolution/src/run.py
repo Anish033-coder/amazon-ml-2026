@@ -205,6 +205,34 @@ def label(frame: pl.DataFrame, truth: pl.DataFrame) -> np.ndarray:
                                         how="left", maintain_order="left")["y"].fill_null(0).to_numpy())
 
 
+def predict_test(args, cache: Path, model1, model2, cols, cols2, rates, best_cfg, row: dict):
+    """Normalise, block and score the test split with trained models, then write the outputs."""
+    tnorm_path, tcheap_path = build_split("test", args, cache)
+    tp1 = score_pairs(tnorm_path, tcheap_path, model1, cols, rates)
+    tf2_path = cache / "test_f2.parquet"
+    stage2.build(tp1, tcheap_path, tnorm_path, tf2_path)
+    del tp1
+    gc.collect()
+    tscored = predict_parquet(model2, tf2_path, cols2)
+    tf2_path.unlink()
+    gc.collect()
+    tscored.write_parquet(cache / "test_scored.parquet")
+    matches = decide.apply(tscored.select("i", "j", "p"), best_cfg)
+    tmeta = pl.read_parquet(tnorm_path, columns=["rid", "entity_id", "src", "country"])
+    ts1 = tmeta.filter(pl.col("src") == 1)
+    out = Path(args.out_dir)
+    write_lists(out / "matching_results.tsv", ts1, matches, tmeta.select("rid", "entity_id"), "matched_entity_ids")
+    write_lists(out / "candidate_pairs.tsv", ts1, tscored.select("i", "j"), tmeta.select("rid", "entity_id"),
+                "candidate_entity_ids")
+    per = (ts1.select(pl.col("rid").alias("i"), "country")
+              .join(matches.group_by("i").len("n"), on="i", how="left").fill_null(0))
+    for r in per.group_by("country").agg(pl.col("n").mean(), (pl.col("n") == 0).mean().alias("e")).sort("country").iter_rows():
+        log(f"  test country={r[0]:<8} avg matches={r[1]:.2f} empty share={r[2]:.3f}")
+    row["test_cands_per_s1"] = round(len(tscored) / len(ts1), 2)
+    log(f"wrote {out / 'matching_results.tsv'} and {out / 'candidate_pairs.tsv'}")
+
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data-dir", required=True)
@@ -220,12 +248,26 @@ def main():
     ap.add_argument("--drop-s1", type=float, default=0.0,
                     help="hide this share of train S1 records (test-like conditions)")
     ap.add_argument("--skip-test", action="store_true")
+    ap.add_argument("--stage", default="all", choices=["all", "test-build", "predict"],
+                    help="test-build: only normalise/block/cheap-score test; predict: score test with saved models")
     ap.add_argument("--log", default="../../experiments/log.csv")
     ap.add_argument("--note", default="")
     args = ap.parse_args()
     t0 = time.time()
     cache = Path(args.cache_dir)
     cache.mkdir(parents=True, exist_ok=True)
+    if args.stage == "test-build":
+        build_split("test", args, cache)
+        log(f"done in {time.time() - t0:.0f}s")
+        return
+    if args.stage == "predict":
+        d = json.loads((cache / "decision.json").read_text())
+        row = {"time": time.strftime("%Y-%m-%d %H:%M"), "note": args.note}
+        predict_test(args, cache, lgb.Booster(model_file=str(cache / "model1.txt")),
+                     lgb.Booster(model_file=str(cache / "model2.txt")), d["cols"], d["cols2"],
+                     pl.read_parquet(cache / "added_word_rates.parquet"), d["cfg"], row)
+        log(f"done in {time.time() - t0:.0f}s")
+        return
 
     # ---------------- train, stage 1: pair model on sample A of S1 records
     norm_path, cheap_path = build_split("train", args, cache)
@@ -294,29 +336,7 @@ def main():
 
     # ---------------- test
     if not args.skip_test:
-        tnorm_path, tcheap_path = build_split("test", args, cache)
-        tp1 = score_pairs(tnorm_path, tcheap_path, model1, cols, rates)
-        tf2_path = cache / "test_f2.parquet"
-        stage2.build(tp1, tcheap_path, tnorm_path, tf2_path)
-        del tp1
-        gc.collect()
-        tscored = predict_parquet(model2, tf2_path, cols2)
-        tf2_path.unlink()
-        gc.collect()
-        tscored.write_parquet(cache / "test_scored.parquet")
-        matches = decide.apply(tscored.select("i", "j", "p"), best_cfg)
-        tmeta = pl.read_parquet(tnorm_path, columns=["rid", "entity_id", "src", "country"])
-        ts1 = tmeta.filter(pl.col("src") == 1)
-        out = Path(args.out_dir)
-        write_lists(out / "matching_results.tsv", ts1, matches, tmeta.select("rid", "entity_id"), "matched_entity_ids")
-        write_lists(out / "candidate_pairs.tsv", ts1, tscored.select("i", "j"), tmeta.select("rid", "entity_id"),
-                    "candidate_entity_ids")
-        per = (ts1.select(pl.col("rid").alias("i"), "country")
-                  .join(matches.group_by("i").len("n"), on="i", how="left").fill_null(0))
-        for r in per.group_by("country").agg(pl.col("n").mean(), (pl.col("n") == 0).mean().alias("e")).sort("country").iter_rows():
-            log(f"  test country={r[0]:<8} avg matches={r[1]:.2f} empty share={r[2]:.3f}")
-        row["test_cands_per_s1"] = round(len(tscored) / len(ts1), 2)
-        log(f"wrote {out / 'matching_results.tsv'} and {out / 'candidate_pairs.tsv'}")
+        predict_test(args, cache, model1, model2, cols, cols2, rates, best_cfg, row)
 
     Path(args.log).parent.mkdir(parents=True, exist_ok=True)
     new = not Path(args.log).exists()

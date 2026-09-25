@@ -8,3 +8,5 @@ v6,2026-09-25 19:31,b4db8c3,submissions/v6_matching_results.tsv.gz,"v5 + blockin
 v6-strict,2026-09-25 19:52,b4db8c3,submissions/v6-strict_matching_results.tsv.gz,"probe: v6 probabilities, stricter decision gamma 2.5 floor 0.4 (train -0.002)",0.963
 v7,2026-09-25 21:23,97b761a,submissions/v7_matching_results.tsv.gz,"blocking v7 (ceiling 0.988), OOF 0.9794",
 v7-strict,2026-09-25 21:23,97b761a,submissions/v7-strict_matching_results.tsv.gz,"v7 probabilities, strict decision gamma 2.5 floor 0.4",
+v8,2026-09-25 22:52,7f50a19,submissions/v8_matching_results.tsv.gz,"v7 + added-word rates, OOF 0.9796",
+v8-strict,2026-09-25 22:52,7f50a19,submissions/v8-strict_matching_results.tsv.gz,"v8 probabilities, strict decision",
