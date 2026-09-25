@@ -36,7 +36,7 @@ def build_split(split: str, args, cache: Path):
     pool of S2/S3 records per S1 record (5.75 vs 4.67 in train)."""
     norm_path = cache / f"{split}_norm.parquet"
     if not norm_path.exists():
-        prep.prepare_split(args.data_dir, split, cache)
+        prep.prepare_split(args.data_dir, split, cache)   # returns the frame; drop it right away
         gc.collect()
     if split == "train" and args.drop_s1 > 0:
         full, split = norm_path, f"train_drop{int(round(args.drop_s1 * 100))}"

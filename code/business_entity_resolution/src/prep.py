@@ -213,17 +213,27 @@ def normalize(df: pl.DataFrame, table: dict) -> pl.DataFrame:
     ).drop("n_src", "a_src", "n_clean", "a_clean").sort("rid")
 
 
-def prepare_split(data_dir, split: str, cache_dir, table: dict = None) -> pl.DataFrame:
+def prepare_split(data_dir, split: str, cache_dir, table: dict = None, n_slices: int = 4) -> pl.DataFrame:
     cache = Path(cache_dir) / f"{split}_norm.parquet"
     if cache.exists():
         return pl.read_parquet(cache)
     df = load_split(data_dir, split)
     if table is None:
         table = load_or_learn_translit(data_dir, cache_dir, df if split == "train" else None)
-    df = normalize(df, table)
+    # normalise in slices of records: every rule works per record (and per token), so the result
+    # is identical to one pass while peak memory is a fraction of it
     cache.parent.mkdir(parents=True, exist_ok=True)
-    df.write_parquet(cache)
-    return df
+    edges = [int(x) for x in __import__("numpy").linspace(0, len(df), n_slices + 1)]
+    parts = []
+    for k in range(n_slices):
+        part = Path(str(cache) + f".part{k}")
+        normalize(df.slice(edges[k], edges[k + 1] - edges[k]), table).write_parquet(part)
+        parts.append(part)
+    del df
+    pl.concat([pl.scan_parquet(x) for x in parts]).sink_parquet(cache)
+    for x in parts:
+        x.unlink()
+    return pl.read_parquet(cache)
 
 
 def load_or_learn_translit(data_dir, cache_dir, train_df=None) -> dict:

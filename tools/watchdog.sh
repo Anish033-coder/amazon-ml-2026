@@ -1,12 +1,12 @@
 #!/bin/zsh
 # Laptop safety guard for long runs: stops the pipeline before macOS comes under real strain.
-#   tools/watchdog.sh <pid> [max_swap_growth_mb=6000] [min_mem_level_pct=8] [min_free_disk_gb=5]
+#   tools/watchdog.sh <pid> [max_swap_growth_mb=12000] [min_mem_level_pct=15] [min_free_disk_gb=5]
 # Swap is measured relative to its value when the run started (macOS frees swap lazily, so the
 # absolute figure can stay high after earlier jobs); memory level is the kernel's own
 # "memory available" percentage.
 pid=$1
-max_growth=${2:-6000}
-min_level=${3:-8}
+max_growth=${2:-12000}
+min_level=${3:-15}
 min_disk=${4:-5}
 log=/Users/anishkumawat/amazon-ml-2026/experiments/watchdog.log
 swap_mb() { sysctl -n vm.swapusage | sed -E 's/.*used = ([0-9.]+)M.*/\1/' | cut -d. -f1 }
