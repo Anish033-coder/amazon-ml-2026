@@ -1,0 +1,2 @@
+time,commit,note,pair_recall,all_found_share,cands_per_s1,sample_frac,oof_f05,decision,test_cands_per_s1,lb_public
+2026-09-25 15:03,a05c34e,dev: 5% sample,0.9395,0.8293,25.22,0.05,0.9561,"{""method"": ""expected_f"", ""one_owner"": true, ""gamma"": 1.4, ""floor"": 0.1}",,

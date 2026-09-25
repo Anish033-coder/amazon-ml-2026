@@ -8,3 +8,5 @@ student_resource_synthetic/
 output/
 output_synthetic/
 *.zip
+cache/
+experiments/*.log
