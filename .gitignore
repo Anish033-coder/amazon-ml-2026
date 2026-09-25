@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+# organiser data and generated outputs stay out of git
+student_resource/
+student_resource_synthetic/
+output/
+output_synthetic/
+*.zip
