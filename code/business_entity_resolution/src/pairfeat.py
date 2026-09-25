@@ -126,6 +126,24 @@ def full_features(rec: pl.DataFrame, pairs: pl.DataFrame, tf: dict, chunk: int =
             (pl.col("ia") | pl.col("ib")).cast(pl.Int8).alias("indic_any"),
             (pl.col("ca").list.len().cast(pl.Int16) - pl.col("cb").list.len().cast(pl.Int16)).abs().alias("n_len_diff"),
             (pl.col("ua").list.len().cast(pl.Int16) - pl.col("ub").list.len().cast(pl.Int16)).abs().alias("num_len_diff"))
+        # House-number offset. On training pairs with near-identical name and address the match
+        # rate is 97% when numbers are equal, 88% when one contains the other (dropped digit /
+        # padding), 73% when they differ by >50 (a typo), but only 6-22% when they differ by
+        # 1-50: a sister business a few doors away. Equality alone cannot see this.
+        ni = pl.col("ha").str.extract(r"^(\d+)").cast(pl.Int64, strict=False)
+        nj = pl.col("hb").str.extract(r"^(\d+)").cast(pl.Int64, strict=False)
+        num = both.select(
+            (ni - nj).abs().alias("d"),
+            ((pl.col("ha") != pl.col("hb")) & (pl.col("ha") != "") & (pl.col("hb") != "")
+             & (pl.col("ha").str.contains(pl.col("hb"), literal=True) | pl.col("hb").str.contains(pl.col("ha"), literal=True))).alias("contains"),
+            ni.alias("ni"), nj.alias("nj"))
+        g = g.with_columns(
+            num["d"].cast(pl.Float32).log1p().alias("num_absdiff_log"),
+            (num["d"].cast(pl.Float32) / pl.max_horizontal(num["ni"], num["nj"], pl.lit(1)).cast(pl.Float32)).alias("num_reldiff"),
+            ((num["d"] > 0) & (num["d"] <= 50)).cast(pl.Float32).alias("num_small_offset"),
+            num["contains"].cast(pl.Float32).alias("num_contains"))
+        g = g.with_columns(pl.Series("num_str_lev", _cp(L["addr_first_num"].to_list(), R["addr_first_num"].to_list(), Levenshtein.distance)))
+        g = g.with_columns(pl.when(pl.col("house_eq").is_null()).then(None).otherwise(pl.col("num_str_lev")).alias("num_str_lev"))
         # what differs between the two records, and is it a typo or a different word?
         dw = both.with_columns(_toks_from("wa", L["addr_wordstr"]), _toks_from("wb", R["addr_wordstr"])).select(
             pl.col("ca").list.set_difference("cb").alias("n_da"), pl.col("cb").list.set_difference("ca").alias("n_db"),

@@ -1,3 +1,4 @@
 time,commit,note,pair_recall,all_found_share,cands_per_s1,sample_frac,oof_f05,decision,test_cands_per_s1,lb_public
 2026-09-25 15:16,d11ed6b,v1: key blocking + LGBM 10% sample,0.942,0.8391,25.34,0.1,0.9572,"{""method"": ""expected_f"", ""one_owner"": true, ""gamma"": 1.4, ""floor"": 0.1}",25.95,
 2026-09-25 16:18,af6fe90,"v2: two-stage (competition + sibling features), 20%/20% samples",0.942,0.8391,25.34,0.2/0.2,0.9608,"{""method"": ""expected_f"", ""one_owner"": true, ""gamma"": 1.0, ""floor"": 0.2}",25.95,
+2026-09-25 17:08,4f511e6,"v3: + difference features, translit fixes",0.9423,0.8394,25.36,0.2/0.2,0.9657,"{""method"": ""expected_f"", ""one_owner"": true, ""gamma"": 1.0, ""floor"": 0.2}",25.96,
