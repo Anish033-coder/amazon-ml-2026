@@ -1,17 +1,10 @@
-"""Text normalisation shared by blocking and features.
+"""Hand-written normalisation rules (abbreviations, legal forms, state names) used by prep.py.
 
 Every rule applies to every record regardless of its country label, so an unseen
 country (France appears only in test) goes through exactly the same path.
 The maps below are small hand-written abbreviation rules (allowed per the organisers'
 Q&A); no gazetteer, postal or business data is bundled or looked up.
 """
-import re
-import unicodedata
-
-_WS = re.compile(r"\s+")
-_NON_WORD = re.compile(r"[\W_]+")
-_APOS = re.compile(r"['’`´]")
-
 # Multi-word phrases rewritten before tokenising (longest first).
 PHRASES = {
     # legal forms
@@ -121,94 +114,3 @@ ADDR_MAP.update(IN_STATES)
 ADDR_DROP = {"cedex", "the", "of", "de", "du", "des", "la", "le", "les", "d", "l"}
 LANDMARK = {"near", "opp", "behind", "beside", "besides", "next", "adjacent", "above",
             "below", "landmark", "facing", "front"}
-
-_PHRASE_RE = re.compile(
-    r"\b(" + "|".join(re.escape(p) for p in sorted(PHRASES, key=len, reverse=True)) + r")\b"
-)
-_PIN_SPLIT = re.compile(r"\b(\d{3}) (\d{3})$")
-_DIGITS = re.compile(r"\d")
-
-
-def fold(text: str) -> str:
-    """Lowercase, strip Latin accents (é->e), map &->and, drop punctuation."""
-    text = unicodedata.normalize("NFKD", _APOS.sub("", text or ""))
-    out, prev_ascii = [], False
-    for ch in text:
-        if prev_ascii and unicodedata.combining(ch):
-            continue
-        out.append(ch)
-        prev_ascii = ch.isascii()
-    text = "".join(out).lower().replace("&", " and ").replace("@", " at ")
-    text = _NON_WORD.sub(" ", text)
-    return _WS.sub(" ", text).strip()
-
-
-def _join_initials(tokens):
-    """'l l c' -> 'llc', 'i b m' -> 'ibm' (abbreviations written with dots)."""
-    out, buf = [], []
-    for t in tokens:
-        if len(t) == 1 and t.isalpha():
-            buf.append(t)
-            continue
-        if buf:
-            out.append("".join(buf))
-            buf = []
-        out.append(t)
-    if buf:
-        out.append("".join(buf))
-    return out
-
-
-def _stem(t: str) -> str:
-    return t[:-1] if len(t) > 4 and t.endswith("s") and not t.endswith("ss") else t
-
-
-def _tokens(text: str, mapping: dict) -> list:
-    text = _PHRASE_RE.sub(lambda m: PHRASES[m.group(1)], fold(text))
-    return [_stem(mapping.get(t, t)) for t in _join_initials(text.split())]
-
-
-def normalize_name(raw: str) -> dict:
-    toks = _tokens(raw, NAME_MAP)
-    legal = [t for t in toks if t in LEGAL]
-    core = [t for t in toks if t not in LEGAL and t not in NAME_DROP] or toks
-    # DBA / trade names: keep each side as an alternative name.
-    alts = [" ".join(core)]
-    if "dba" in core:
-        i = core.index("dba")
-        alts = [" ".join(p) for p in (core[:i], core[i + 1:]) if p] + [" ".join(core[:i] + core[i + 1:])]
-    core_str = " ".join(t for t in core if t != "dba")
-    return {
-        "name_full": " ".join(toks),
-        "name_core": core_str,
-        "name_legal": " ".join(sorted(set(legal))),
-        "name_alts": alts,
-        "name_initials": "".join(t[0] for t in core if t != "dba" and t[0].isalpha()),
-        "name_compact": core_str.replace(" ", ""),
-    }
-
-
-def normalize_address(raw: str) -> dict:
-    folded = _PIN_SPLIT.sub(r"\1\2", fold(raw))  # "400 001" -> "400001"
-    text = _PHRASE_RE.sub(lambda m: PHRASES[m.group(1)], folded)
-    toks = [_stem(ADDR_MAP.get(t, t)) for t in _join_initials(text.split())]
-    toks = [t for t in toks if t not in ADDR_DROP]
-    postal = ""
-    for t in reversed(toks):
-        if t.isdigit() and len(t) in (5, 6):
-            postal = t
-            break
-    nums = [t for t in toks if _DIGITS.search(t) and t != postal]
-    words = [t for t in toks if not _DIGITS.search(t)]
-    return {
-        "addr_full": " ".join(toks),
-        "addr_words": " ".join(words),
-        "addr_postal": postal,
-        "addr_nums": " ".join(nums),
-        "addr_house": nums[0] if nums else "",
-        "addr_landmark": int(any(t in LANDMARK for t in toks)),
-    }
-
-
-def normalize_country(raw: str) -> str:
-    return fold(raw)

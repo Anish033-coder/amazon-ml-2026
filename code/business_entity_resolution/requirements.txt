@@ -1,7 +1,9 @@
-# Python 3.11
-numpy==2.4.6
-pandas==3.0.6
-scipy==1.17.1
-scikit-learn==1.9.1
-rapidfuzz==3.14.6
-lightgbm==4.7.0
+# Python 3.11 — all libraries are pure-algorithm, permissively licensed, and bundle no external data
+polars==1.44.2          # MIT
+pyarrow==25.0.1         # Apache-2.0
+numpy==2.4.6            # BSD-3-Clause
+scipy==1.17.1           # BSD-3-Clause (scikit-learn dependency)
+scikit-learn==1.9.1     # BSD-3-Clause
+rapidfuzz==3.14.6       # MIT
+lightgbm==4.7.0         # MIT
+anyascii==0.3.3         # ISC (Unicode character transliteration table; fallback only)

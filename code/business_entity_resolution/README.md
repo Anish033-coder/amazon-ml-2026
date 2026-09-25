@@ -1,39 +1,52 @@
 # Business Entity Resolution — Amazon ML Challenge 2026
 
-For every Source 1 record, find the matching Source 2 and Source 3 records. The pipeline runs on CPU and uses only the provided training data.
-
-## Pipeline
-
-1. **Normalise** (`src/normalize.py`). Lowercases text, strips accents, and maps `&` to `and`. Also:
-   - expands abbreviations and pulls legal forms (`Pvt Ltd`, `LLC`, `SARL`, …) into a separate field
-   - folds city and state spellings
-   - extracts the postal code, house number and landmark flag
-
-   The same rules apply to every country label.
-2. **Blocking** (`src/blocking.py`). Builds TF-IDF nearest neighbours over three text views (name char n-grams, name+address char n-grams, name words). It searches in both directions, S1→S2/S3 (top-k) and S2/S3→S1 (top-k_rev), within the same country label, and takes the union. That union is written to `candidate_pairs.tsv` and is exactly the set the model scores.
-3. **Pair features** (`src/features.py`). About 60 country-agnostic features:
-   - fuzzy and TF-IDF similarities for name and address
-   - postal code and house number agreement
-   - how common the name and address are in the split
-   - each candidate's rank and score gap within its S1 group and within its S2/S3 group
-4. **Model**. LightGBM binary classifier, trained with 5-fold `GroupKFold` grouped by Source 1 id.
-5. **Post-processing** (`src/postprocess.py`). Chosen on out-of-fold predictions with the exact macro F0.5 metric. Options:
-   - one owner per S2/S3 record
-   - per-entity thresholds, or choosing the list that maximises expected F0.5
+For every Source 1 record, find the matching Source 2 and Source 3 records. The pipeline runs on CPU in 16 GB RAM, and uses only the provided training and test files.
 
 ## Reproduce
 
 ```bash
-# from this folder, with Python 3.11
-python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
+# Python 3.11, from this folder
+python -m venv .venv && source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-python -m src.eda --data-dir <student_resource>/dataset
-python -m src.pipeline --data-dir <student_resource>/dataset --out-dir <submission_root>/output --loco
+python -m src.run --data-dir <student_resource>/dataset --cache-dir <cache> --out-dir <submission>/output
 ```
 
-Outputs: `output/matching_results.tsv` and `output/candidate_pairs.tsv`. The run also prints:
-- blocking recall ceiling and reduction ratio
-- out-of-fold F0.5, overall and per country
-- leave-one-country-out F0.5, as a stand-in for the unseen test country
+This writes `output/matching_results.tsv` and `output/candidate_pairs.tsv`. It takes about 20 minutes on an Apple M4 with 16 GB RAM. Intermediate results are cached as parquet in `--cache-dir`. Random seed: 42.
 
-Every run appends a row to `experiments/log.csv`. Random seed: 42.
+## Pipeline (`src/`)
+
+| Step | File | What it does |
+|---|---|---|
+| 1. Normalise | `prep.py`, `normalize.py` | See below. |
+| 2. Blocking | `block.py` | Records emit hashed keys from their rarest tokens: whole name, name-token pairs, name token × house number, house number × address word, name token × address word, plus name-only keys for S2/S3 records with an empty address. Keys are built within the same country label. An S1 and an S2/S3 record become candidates when they share a small block. Candidates are capped at 30 per S1 record, ranked by keys shared. |
+| 3. Features | `pairfeat.py` | About 50 features per pair (see below). No feature uses the country label itself. |
+| 4. Model | `run.py` | LightGBM binary classifier, `GroupKFold` grouped by S1 record, trained on a sample of S1 records. |
+| 5. Decision | `decide.py` | See below. |
+
+**Normalisation.** Vectorised polars text cleaning:
+- lowercase, strip accents, remove punctuation and URLs
+- hand-written abbreviation and legal-form rules
+- state names mapped to codes
+
+Indic-script words (Devanagari, Tamil, Bengali, Kannada, …) are converted with a word dictionary **learned from the training ground truth**: an Indic-script S2/S3 name is aligned word by word with its matched S1 name. `anyascii` is the character-level fallback for unseen words.
+
+**Features:**
+- fuzzy name and address similarities (RapidFuzz)
+- token, number and house-number agreement
+- name and address frequency in the split, to catch chains and shared buildings
+- competition features: the rank and score gap of a pair within its S1 group and within its S2/S3 group
+
+**Decision.** Per S1 record:
+- each S2/S3 record keeps only its best S1 (in the training labels no S2/S3 record matches two S1 records)
+- then choose the top-k that maximises expected F0.5, or predict "no match"
+
+The settings are chosen on out-of-fold predictions with the exact macro F0.5 metric.
+
+## Compliance with the challenge rules
+
+- **No external data.** No network access, APIs, geocoding, gazetteers, postal datasets or hosted LLMs. The code makes no network calls.
+- **Only provided data.** The model and the transliteration dictionary are learned only from the provided training files. Unsupervised statistics (token frequencies, blocking keys) are computed on the provided test files, which the organisers' Q&A permits.
+- **Hand-written rules only.** `normalize.py` contains small hand-written normalisation dictionaries: abbreviations, legal forms, and state name → code. The organisers' Q&A permits these.
+- **Model license.** The only model is LightGBM (MIT), trained from scratch. No pretrained weights are used.
+- **Libraries.** All libraries are pure-algorithm and permissively licensed (see `requirements.txt`).
+- **Development.** The team wrote this code with AI coding assistance, which the organisers' Q&A permits. No AI model is called by the pipeline.
