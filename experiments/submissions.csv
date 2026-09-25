@@ -10,5 +10,5 @@ v7,2026-09-25 21:23,97b761a,submissions/v7_matching_results.tsv.gz,"blocking v7 
 v7-strict,2026-09-25 21:23,97b761a,submissions/v7-strict_matching_results.tsv.gz,"v7 probabilities, strict decision gamma 2.5 floor 0.4",
 v8,2026-09-25 22:52,7f50a19,submissions/v8_matching_results.tsv.gz,"v7 + added-word rates, OOF 0.9796",
 v8-strict,2026-09-25 22:52,7f50a19,submissions/v8-strict_matching_results.tsv.gz,"v8 probabilities, strict decision",
-v9,2026-09-25 23:50,1f34c7d,submissions/v9_matching_results.tsv.gz,"blocking v7 + added-word rates + legal direction + name typo fixes, 20% samples, OOF 0.9813",
-v9-strict,2026-09-25 23:50,1f34c7d,submissions/v9-strict_matching_results.tsv.gz,"v9 probabilities, strict decision gamma 2.5 floor 0.4",
+v9,2026-09-25 23:50,81ecec9,submissions/v9_matching_results.tsv.gz,"blocking v7 + added-word rates + legal direction + name typo fixes, 20% samples, OOF 0.9813",
+v9-strict,2026-09-25 23:50,81ecec9,submissions/v9-strict_matching_results.tsv.gz,"v9 probabilities, strict decision gamma 2.5 floor 0.4",
