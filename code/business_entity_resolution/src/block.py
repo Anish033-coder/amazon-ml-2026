@@ -8,6 +8,9 @@ within its country). Families:
   nnum    : rare name token x house number     (robust to typos in other name tokens)
   numw    : house number x rare address word   (catches renamed / Indic-script names)
   nw      : rare name token x rare address word (catches missing house numbers)
+  cnum    : whole name x house number        (common names: the number makes the block small)
+  numnum  : pairs of rare numbers            (Indian addresses carry several: '741/3', 'D-61')
+  numw6   : house number x 6 rare address words (renamed businesses at the same address)
   compact_e, nn_e : name-only keys restricted to S2/S3 records whose address is empty,
             with looser block limits (these records have nothing else to match on)
 Numbers are reduced to their digits ('2300c' -> '2300') and the rarest ones are used.
@@ -17,9 +20,9 @@ many keys they share and capped per S1 record.
 """
 import polars as pl
 
-FAMILIES = ("compact", "n1", "nn", "nnum", "numw", "nw", "compact_e", "nn_e")
+FAMILIES = ("compact", "n1", "nn", "nnum", "numw", "nw", "cnum", "numnum", "numw6", "compact_e", "nn_e")
 # per-family (cap_s1, cap_r) overrides; others use the build_candidates defaults
-FAMILY_CAPS = {"compact_e": (8, 30), "nn_e": (8, 30)}
+FAMILY_CAPS = {"compact_e": (8, 30), "nn_e": (8, 30), "cnum": (10, 60)}
 _SHIFT = 1 << 32
 
 
@@ -43,10 +46,10 @@ def _pairs_key(a, b, seed, ordered=False):
     return x.select("rid", pl.struct("h", "h_b").hash(seed=seed).alias("key"))
 
 
-def _family_keys(sub, fam, rare_name, rare_addr, nums):
+def _family_keys(sub, fam, rare_name, rare_addr, nums, rare_addr6=None, nums3=None):
     seed = 1000 + FAMILIES.index(fam)
     if fam.endswith("_e"):
-        return _family_keys(sub, fam[:-2], rare_name, rare_addr, nums).with_columns(
+        return _family_keys(sub, fam[:-2], rare_name, rare_addr, nums, rare_addr6, nums3).with_columns(
             pl.col("key").hash(seed=seed))
     if fam == "compact":
         return (sub.filter(pl.col("name_compact").str.len_chars() >= 5)
@@ -61,6 +64,15 @@ def _family_keys(sub, fam, rare_name, rare_addr, nums):
         return _pairs_key(nums, rare_addr, seed)
     if fam == "nw":
         return _pairs_key(rare_name, rare_addr, seed)
+    if fam == "cnum":
+        first = nums.group_by("rid", maintain_order=True).first()
+        comp = (sub.filter(pl.col("name_compact").str.len_chars() >= 3)
+                   .select("rid", pl.col("name_compact").hash(seed=11).alias("h")))
+        return _pairs_key(comp, first, seed)
+    if fam == "numnum":
+        return _pairs_key(nums3, nums3, seed, ordered=True)
+    if fam == "numw6":
+        return _pairs_key(nums, rare_addr6, seed)
     raise ValueError(fam)
 
 
@@ -68,13 +80,15 @@ def _country_candidates(sub, cap_s1, cap_r, max_per_s1, k_name, k_addr, k_num, v
     is_s1 = sub.select("rid", (pl.col("src") == 1).alias("s1"))
     rare_name = _rare(sub, "core", k_name)
     rare_addr = _rare(sub, "addr_words", k_addr)
+    rare_addr6 = _rare(sub, "addr_words", 6)
     digits = sub.select("rid", pl.col("addr_nums").list.eval(pl.element().str.extract(r"(\d+)")).alias("num_digits"))
     nums = _rare(digits.join(sub.select("rid", "country"), on="rid"), "num_digits", k_num)
+    nums3 = _rare(digits.join(sub.select("rid", "country"), on="rid"), "num_digits", 3)
     empty_r = sub.filter((pl.col("src") != 1) & (pl.col("addr_words").list.len() == 0)
                          & (pl.col("addr_nums").list.len() == 0)).select("rid")
     codes = []
     for fam in FAMILIES:
-        keys = _family_keys(sub, fam, rare_name, rare_addr, nums).unique().join(is_s1, on="rid")
+        keys = _family_keys(sub, fam, rare_name, rare_addr, nums, rare_addr6, nums3).unique().join(is_s1, on="rid")
         if fam.endswith("_e"):  # S1 side: everyone; S2/S3 side: empty-address records only
             keys = keys.filter(pl.col("s1") | pl.col("rid").is_in(empty_r["rid"].implode()))
         c1, cr = FAMILY_CAPS.get(fam, (cap_s1, cap_r))

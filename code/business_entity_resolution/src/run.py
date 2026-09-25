@@ -189,6 +189,7 @@ def main():
                       fb.select("i", "j").with_columns(pl.Series("p", oof2)), "p")
     del f2, fb, X2, y2
     gc.collect()
+    scored.write_parquet(cache / "train_scored.parquet")   # for error analysis
     truth_b = truth.filter(pl.col("i").is_in(s1_b.implode()))
     log("decision on stage-1 probabilities (for comparison):")
     s1_score, _ = decide.tune(scored.select("i", "j", pl.col("p1").alias("p")), truth_b, s1_b)

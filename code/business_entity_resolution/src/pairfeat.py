@@ -118,6 +118,14 @@ def full_features(rec: pl.DataFrame, pairs: pl.DataFrame, tf: dict, chunk: int =
             _jacc("ta", "tb").alias("a_jacc"),
             _jacc("ua", "ub").alias("num_jacc"),
             (pl.col("ca").list.first() == pl.col("cb").list.first()).cast(pl.Float32).alias("n_first_eq"),
+            # initials ('GF' for 'GTM Federation') and one-word invented trade names ('Brixavi')
+            (((pl.col("cb").list.len() == 1) & (pl.col("ca").list.len() >= 2)
+              & (pl.col("ca").list.eval(pl.element().str.slice(0, 1)).list.join("") == pl.col("cb").list.join("")))
+             | ((pl.col("ca").list.len() == 1) & (pl.col("cb").list.len() >= 2)
+                & (pl.col("cb").list.eval(pl.element().str.slice(0, 1)).list.join("") == pl.col("ca").list.join(""))))
+            .cast(pl.Float32).alias("n_acronym"),
+            pl.col("ca").list.len().cast(pl.Int8).alias("n_tok_s1"),
+            pl.col("cb").list.len().cast(pl.Int8).alias("n_tok_r"),
             pl.when((pl.col("la") == "") | (pl.col("lb") == "")).then(None)
               .otherwise((pl.col("la") == pl.col("lb")).cast(pl.Float32)).alias("legal_eq"),
             pl.when((pl.col("ha") == "") | (pl.col("hb") == "")).then(None)
