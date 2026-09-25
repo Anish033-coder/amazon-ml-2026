@@ -175,6 +175,11 @@ def full_features(rec: pl.DataFrame, pairs: pl.DataFrame, tf: dict, rates: pl.Da
             pl.when((pl.col("ha") == "") | (pl.col("hb") == "")).then(None)
               .otherwise((pl.col("ha") == pl.col("hb")).cast(pl.Float32)).alias("house_eq"),
             ((pl.col("aa") == "").cast(pl.Int8) + (pl.col("ab") == "").cast(pl.Int8)).alias("addr_empty"),
+            # direction of a legal-suffix change: with a different house number, a copy that ADDS
+            # or CHANGES the suffix matches ~17-20% of the time on train, one that drops it 38%
+            ((pl.col("la") == "") & (pl.col("lb") != "")).cast(pl.Int8).alias("legal_added"),
+            ((pl.col("la") != "") & (pl.col("lb") == "")).cast(pl.Int8).alias("legal_dropped"),
+            ((pl.col("la") != "") & (pl.col("lb") != "") & (pl.col("la") != pl.col("lb"))).cast(pl.Int8).alias("legal_changed"),
             (pl.col("ia") | pl.col("ib")).cast(pl.Int8).alias("indic_any"),
             (pl.col("ca").list.len().cast(pl.Int16) - pl.col("cb").list.len().cast(pl.Int16)).abs().alias("n_len_diff"),
             (pl.col("ua").list.len().cast(pl.Int16) - pl.col("ub").list.len().cast(pl.Int16)).abs().alias("num_len_diff"))
