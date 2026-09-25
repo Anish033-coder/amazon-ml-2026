@@ -1,2 +1,3 @@
 time,commit,note,k_fwd,k_rev,country_block,pair_recall,f05_ceiling,cands_per_s1,reduction_ratio,oof_f05,post,test_cands_per_s1,lb_public
 2026-09-25 14:27,,synthetic smoke test,10,3,True,1.0,1.0,22.524,0.9926,1.0,"{""method"": ""threshold"", ""one_owner"": false, ""t"": 0.2, ""rel"": 0.0}",22.61,
+2026-09-25 14:35,fccc0a9,no city aliases,10,3,True,1.0,1.0,22.524,0.9926,1.0,"{""method"": ""threshold"", ""one_owner"": false, ""t"": 0.2, ""rel"": 0.0}",,

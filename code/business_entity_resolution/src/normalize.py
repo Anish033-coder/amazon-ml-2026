@@ -2,8 +2,8 @@
 
 Every rule applies to every record regardless of its country label, so an unseen
 country (France appears only in test) goes through exactly the same path.
-The maps below are hand-written spelling/abbreviation rules, not lookups of any
-business identity.
+The maps below are small hand-written abbreviation rules (allowed per the organisers'
+Q&A); no gazetteer, postal or business data is bundled or looked up.
 """
 import re
 import unicodedata
@@ -57,14 +57,6 @@ IN_STATES = {
     "punjab": "pb", "rajasthan": "rj", "sikkim": "sk", "telangana": "ts", "tripura": "tr",
     "uttarakhand": "uk", "uttaranchal": "uk", "chandigarh": "chd", "puducherry": "py",
     "pondicherry": "py", "maharashtra": "mh",
-}
-# Old/new or transliterated spellings of the same city.
-CITY_ALIASES = {
-    "bangalore": "bengaluru", "bombay": "mumbai", "madras": "chennai", "calcutta": "kolkata",
-    "gurgaon": "gurugram", "poona": "pune", "trivandrum": "thiruvananthapuram",
-    "mysore": "mysuru", "baroda": "vadodara", "cochin": "kochi", "benares": "varanasi",
-    "banaras": "varanasi", "mangalore": "mangaluru", "belgaum": "belagavi",
-    "hubli": "hubballi", "vizag": "visakhapatnam", "allahabad": "prayagraj",
 }
 
 NAME_MAP = {
@@ -126,7 +118,6 @@ ADDR_MAP = {
 }
 ADDR_MAP.update(US_STATES)
 ADDR_MAP.update(IN_STATES)
-ADDR_MAP.update(CITY_ALIASES)
 ADDR_DROP = {"cedex", "the", "of", "de", "du", "des", "la", "le", "les", "d", "l"}
 LANDMARK = {"near", "opp", "behind", "beside", "besides", "next", "adjacent", "above",
             "below", "landmark", "facing", "front"}
