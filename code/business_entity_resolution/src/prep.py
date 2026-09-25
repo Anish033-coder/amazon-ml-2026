@@ -118,11 +118,44 @@ def _stem(t: pl.Expr) -> pl.Expr:
               .then(t.str.slice(0, t.str.len_chars() - 1)).otherwise(t))
 
 
-def _tokens(df: pl.DataFrame, col: str, mapping: dict) -> pl.DataFrame:
+_LEET = str.maketrans("0134578", "oleastb")
+_LEGAL_LONG = ["private", "limited", "company", "corporation", "incorporated", "enterprises", "services"]
+
+
+def _name_typo_map(tokens: pl.Series) -> dict:
+    """Name typos seen in the data: digits used as letters ('c0nsultancy', 'specia1ists',
+    '5arl' for SARL) and misspelt legal words ('priate', 'pirvate', '1imited'). Word tokens with
+    digits are mapped back to letters, and a word within edit distance 1-2 of a long legal word
+    is mapped onto it, so typo'd legal forms are recognised as legal forms in every country."""
+    from rapidfuzz import process as rfp
+    from rapidfuzz.distance import OSA
+    vocab = tokens.unique().to_list()
+    out = {}
+    for t in vocab:
+        u = t
+        if any(ch.isdigit() for ch in t) and sum(ch.isalpha() for ch in t) >= max(2, len(t) // 2) and not t[0].isdigit() \
+                or (t[:1] in "015" and len(t) >= 3 and sum(ch.isalpha() for ch in t) >= len(t) - 1):
+            u = t.translate(_LEET)
+        if len(u) >= 6 and u not in _LEGAL_LONG:
+            # letter swaps count as one edit ('pirvate'); a guard on first and last letters keeps
+            # real words such as 'compass' or 'limiter' from being pulled onto a legal word
+            hit = rfp.extractOne(u, _LEGAL_LONG, scorer=OSA.distance, score_cutoff=2 if len(u) >= 7 else 1)
+            w = hit[0] if hit is not None else ""
+            if hit is not None and u[0] == w[0] and (u[-1] == w[-1] or u[-2:] == w[-2:][::-1]):
+                u = hit[0]
+        if u != t:
+            out[t] = u
+    out.update({"lnc": "inc"})
+    return out
+
+
+def _tokens(df: pl.DataFrame, col: str, mapping: dict, fix_typos: bool = False) -> pl.DataFrame:
     """rid, pos, tok: cleaned, abbreviation-mapped, stemmed tokens (duplicates removed)."""
     t = (df.select("rid", pl.col(col).str.split(" ").alias("tok"))
-           .explode("tok").filter(pl.col("tok").is_not_null() & (pl.col("tok") != ""))
-           .with_columns(pl.col("tok").replace(mapping))
+           .explode("tok").filter(pl.col("tok").is_not_null() & (pl.col("tok") != "")))
+    if fix_typos:
+        t = t.with_columns(pl.col("tok").replace(_name_typo_map(t["tok"])))
+    t = (t.with_columns(pl.col("tok").replace(mapping))
            .with_columns(pl.when(pl.col("tok").str.contains(r"^\d+$"))
                            .then(pl.col("tok").str.strip_chars_start("0"))
                            .otherwise(_stem(pl.col("tok"))).alias("tok"))
@@ -150,7 +183,7 @@ def normalize(df: pl.DataFrame, table: dict) -> pl.DataFrame:
         _clean(pl.col("a_src").str.replace_all(r"(?i)\b(?:p\.?\s?o\.?\s*box|pmb|pob)\s*#?\s*\d+", " ")).alias("a_clean"),
         (pl.col("n_src") != pl.col("name_raw")).alias("name_was_indic"))
 
-    nt = _tokens(df, "n_clean", NAME_MAP)
+    nt = _tokens(df, "n_clean", NAME_MAP, fix_typos=True)
     # rows are already in (rid, pos) order and group_by keeps row order within groups
     name = (nt.group_by("rid").agg(
                 pl.col("tok").alias("name_toks"),
