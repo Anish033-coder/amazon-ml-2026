@@ -17,6 +17,7 @@ from .normalize import ADDR_DROP, ADDR_MAP, LEGAL, NAME_DROP, NAME_MAP, PHRASES
 
 INDIC = r"[ऀ-෿]"
 _INDIC_RE = re.compile(INDIC)
+_JOINERS = re.compile("[​-‍﻿]")   # zero-width (non-)joiners otherwise split Indic words
 _SPLIT_RE = re.compile(r"[^\wऀ-෿]+")
 
 # French abbreviations (the unseen test country). Hand-written, deterministic.
@@ -50,7 +51,7 @@ def load_truth_pairs(data_dir) -> pl.DataFrame:
 
 
 # ---------------------------------------------------------------- transliteration
-def learn_translit(df: pl.DataFrame, truth: pl.DataFrame, min_count: int = 3) -> dict:
+def learn_translit(df: pl.DataFrame, truth: pl.DataFrame, min_count: int = 3, min_share: float = 0.25) -> dict:
     """Indic token -> Latin token, learned from matched train pairs.
 
     Names: an Indic-script S2/S3 name with the same number of words as its S1 name is
@@ -64,6 +65,7 @@ def learn_translit(df: pl.DataFrame, truth: pl.DataFrame, min_count: int = 3) ->
               .join(s1, on="s1_id"))
     name_votes, addr_votes, addr_tot = defaultdict(Counter), defaultdict(Counter), Counter()
     for rn, ra, sn, sa in j.select("r_name", "r_addr", "name_raw", "addr_raw").iter_rows():
+        rn, ra = _JOINERS.sub("", rn), _JOINERS.sub("", ra)
         if _INDIC_RE.search(rn):
             rt = [t for t in _SPLIT_RE.split(rn) if t]
             st = [t for t in _SPLIT_RE.split(sn) if t]
@@ -82,7 +84,8 @@ def learn_translit(df: pl.DataFrame, truth: pl.DataFrame, min_count: int = 3) ->
         for tok, c in votes.items():
             best, n = c.most_common(1)[0]
             denom = tot[tok] if tot is not None else sum(c.values())
-            if n >= min_count and n / denom >= 0.6:
+            # spelling variants (shree / shri / sri) split the vote: keep the most common one
+            if n >= min_count and n / denom >= min_share:
                 out[tok] = best
     return out
 
@@ -90,6 +93,7 @@ def learn_translit(df: pl.DataFrame, truth: pl.DataFrame, min_count: int = 3) ->
 def _translit(text: str, table: dict) -> str:
     if not _INDIC_RE.search(text):
         return text
+    text = _JOINERS.sub("", text)
     parts = re.split(r"([\wऀ-෿]+)", text)
     return "".join(table.get(p) or (anyascii(p) if _INDIC_RE.search(p) else p) for p in parts)
 

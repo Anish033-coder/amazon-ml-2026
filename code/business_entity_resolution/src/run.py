@@ -87,11 +87,11 @@ def fit_cv(X, y, groups, args, tag):
 
 def score_pairs(norm_path, cheap_path, model, cols, step=3_000_000) -> pl.DataFrame:
     """Stage-1 probability p1 for every candidate pair of a split, chunk by chunk."""
-    rec = pairfeat.record_table(norm_path)
+    rec, tf = pairfeat.record_table(norm_path), pairfeat.token_freqs(norm_path)
     n = pl.scan_parquet(cheap_path).select(pl.len()).collect().item()
     out = []
     for s in range(0, n, step):
-        f = pairfeat.full_features(rec, pl.scan_parquet(cheap_path).slice(s, step).collect())
+        f = pairfeat.full_features(rec, pl.scan_parquet(cheap_path).slice(s, step).collect(), tf)
         out.append(f.select("i", "j").with_columns(
             pl.Series("p1", model.predict(f.select(cols).to_numpy().astype(np.float32))).cast(pl.Float32)))
         del f
@@ -143,9 +143,9 @@ def main():
     rep = block.recall_report(pl.read_parquet(cheap_path, columns=["i", "j"]), truth, len(meta))
     log(f"blocking: {rep}")
     s1_a = meta["rid"].sample(fraction=args.frac_a, seed=SEED).sort()
-    rec = pairfeat.record_table(norm_path)
-    feats = pairfeat.full_features(rec, pl.scan_parquet(cheap_path).filter(pl.col("i").is_in(s1_a.implode())).collect())
-    del rec
+    rec, tf = pairfeat.record_table(norm_path), pairfeat.token_freqs(norm_path)
+    feats = pairfeat.full_features(rec, pl.scan_parquet(cheap_path).filter(pl.col("i").is_in(s1_a.implode())).collect(), tf)
+    del rec, tf
     cols = pairfeat.feature_columns(feats)
     X, y = feats.select(cols).to_numpy().astype(np.float32), label(feats, truth)
     keys_a = feats.select("i", "j")

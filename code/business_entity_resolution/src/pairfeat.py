@@ -19,12 +19,36 @@ def record_table(norm_path) -> pl.DataFrame:
         pl.len().over("addr_norm").log1p().cast(pl.Float32).alias("freq_addr"))
 
 
+def token_freqs(norm_path) -> dict:
+    """log document frequency of every name token and address word in the split. A word that
+    differs between two names is a typo if it is rare, but a different business if it is a
+    common word (e.g. 'GTM Federation' vs 'GTM Fetes')."""
+    out = {}
+    for col, tag in (("core", "name"), ("addr_words", "addr")):
+        t = pl.read_parquet(norm_path, columns=[col]).explode(col).drop_nulls(col)
+        out[tag] = t.group_by(col).len("n").select(pl.col(col).alias("tok"), pl.col("n").log1p().cast(pl.Float32).alias("lf"))
+    return out
+
+
+def _freq_stats(lists: pl.Series, freq: pl.DataFrame, tag: str) -> pl.DataFrame:
+    """max / min log-frequency of the tokens in each list (null when the list is empty)."""
+    k = pl.int_range(len(lists), dtype=pl.UInt32, eager=True).alias("k")
+    e = pl.DataFrame([k, lists.alias("tok")]).explode("tok").drop_nulls("tok")
+    m = e.join(freq, on="tok", how="left").group_by("k").agg(
+        pl.col("lf").max().alias(f"{tag}_fmax"), pl.col("lf").min().alias(f"{tag}_fmin"))
+    return pl.DataFrame([k]).join(m, on="k", how="left", maintain_order="left").drop("k")
+
+
 def _toks(col: str) -> pl.Expr:
     return pl.col(col).str.split(" ").list.eval(pl.element().filter(pl.element() != ""))
 
 
 def _cp(a, b, scorer):
     return process.cpdist(a, b, scorer=scorer, workers=-1, dtype=np.float32)
+
+
+def _toks_from(name: str, series: pl.Series) -> pl.Expr:
+    return pl.lit(series).str.split(" ").list.eval(pl.element().filter(pl.element() != "")).alias(name)
 
 
 def _jacc(a: str, b: str) -> pl.Expr:
@@ -58,8 +82,9 @@ def cheap_scores(norm_path, pairs: pl.DataFrame, chunk: int = 5_000_000) -> pl.D
     return p.with_columns(ex)
 
 
-def full_features(rec: pl.DataFrame, pairs: pl.DataFrame, chunk: int = 2_000_000) -> pl.DataFrame:
-    """pairs must carry the cheap_scores columns; returns them plus the full feature set."""
+def full_features(rec: pl.DataFrame, pairs: pl.DataFrame, tf: dict, chunk: int = 2_000_000) -> pl.DataFrame:
+    """pairs must carry the cheap_scores columns; returns them plus the full feature set.
+    tf: token_freqs() of the same split."""
     outs = []
     for s in range(0, len(pairs), chunk):
         p = pairs.slice(s, chunk)
@@ -101,6 +126,27 @@ def full_features(rec: pl.DataFrame, pairs: pl.DataFrame, chunk: int = 2_000_000
             (pl.col("ia") | pl.col("ib")).cast(pl.Int8).alias("indic_any"),
             (pl.col("ca").list.len().cast(pl.Int16) - pl.col("cb").list.len().cast(pl.Int16)).abs().alias("n_len_diff"),
             (pl.col("ua").list.len().cast(pl.Int16) - pl.col("ub").list.len().cast(pl.Int16)).abs().alias("num_len_diff"))
+        # what differs between the two records, and is it a typo or a different word?
+        dw = both.with_columns(_toks_from("wa", L["addr_wordstr"]), _toks_from("wb", R["addr_wordstr"])).select(
+            pl.col("ca").list.set_difference("cb").alias("n_da"), pl.col("cb").list.set_difference("ca").alias("n_db"),
+            pl.col("wa").list.set_difference("wb").alias("w_da"), pl.col("wb").list.set_difference("wa").alias("w_db"),
+            pl.col("ua").list.set_difference("ub").alias("u_da"), pl.col("ub").list.set_difference("ua").alias("u_db"))
+        diff = {}
+        for t in ("n", "w"):
+            da, db = dw[f"{t}_da"], dw[f"{t}_db"]
+            ja, jb = da.list.join(" ").to_list(), db.list.join(" ").to_list()
+            empty = (da.list.len() == 0) | (db.list.len() == 0)
+            r = _cp(ja, jb, fuzz.ratio)
+            r[empty.to_numpy()] = np.nan
+            diff[f"{t}_diff_ratio"] = r
+            diff[f"{t}_extra_s1"] = da.list.len().cast(pl.Int8).to_numpy()
+            diff[f"{t}_extra_r"] = db.list.len().cast(pl.Int8).to_numpy()
+        diff["u_extra_s1"] = dw["u_da"].list.len().cast(pl.Int8).to_numpy()
+        diff["u_extra_r"] = dw["u_db"].list.len().cast(pl.Int8).to_numpy()
+        fz_diff = pl.concat([pl.DataFrame(diff),
+                             _freq_stats(dw["n_da"], tf["name"], "n_extra_s1"), _freq_stats(dw["n_db"], tf["name"], "n_extra_r"),
+                             _freq_stats(dw["w_da"], tf["addr"], "w_extra_s1"), _freq_stats(dw["w_db"], tf["addr"], "w_extra_r")],
+                            how="horizontal")
         extra = pl.DataFrame({
             "src3": (R["src"] == 3).cast(pl.Int8),
             "freq_name_i": L["freq_name"], "freq_name_j": R["freq_name"],
@@ -108,7 +154,7 @@ def full_features(rec: pl.DataFrame, pairs: pl.DataFrame, chunk: int = 2_000_000
         fz = pl.DataFrame(f)
         for c in ("a_ratio", "a_partial", "a_tsort", "a_jw"):
             fz = fz.with_columns(pl.when(g["addr_empty"] > 0).then(None).otherwise(pl.col(c)).alias(c))
-        outs.append(pl.concat([p, fz, g, extra], how="horizontal"))
+        outs.append(pl.concat([p, fz, g, fz_diff, extra], how="horizontal"))
     return pl.concat(outs)
 
 

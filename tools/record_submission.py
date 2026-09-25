@@ -22,6 +22,7 @@ def main():
     ap.add_argument("--tag", required=True)
     ap.add_argument("--note", default="")
     ap.add_argument("--lb", default="")
+    ap.add_argument("--file", default="output/matching_results.tsv", help="the file that was uploaded")
     a = ap.parse_args()
     rows = list(csv.DictReader(open(LOG, encoding="utf-8"))) if LOG.exists() else []
     hit = [r for r in rows if r["tag"] == a.tag]
@@ -33,7 +34,7 @@ def main():
         commit = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, text=True).strip()
         dst = ROOT / "submissions" / f"{a.tag}_matching_results.tsv.gz"
         dst.parent.mkdir(exist_ok=True)
-        with open(ROOT / "output" / "matching_results.tsv", "rb") as src, gzip.open(dst, "wb") as out:
+        with open(ROOT / a.file, "rb") as src, gzip.open(dst, "wb") as out:
             shutil.copyfileobj(src, out)
         subprocess.run(["git", "tag", "-f", f"sub-{a.tag}"], cwd=ROOT, check=True)
         rows.append({"tag": a.tag, "time": time.strftime("%Y-%m-%d %H:%M"), "commit": commit,
