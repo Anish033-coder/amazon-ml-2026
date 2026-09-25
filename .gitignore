@@ -10,3 +10,4 @@ output_synthetic/
 *.zip
 cache/
 experiments/*.log
+submissions/
