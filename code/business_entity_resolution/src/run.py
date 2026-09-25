@@ -87,6 +87,53 @@ def write_lists(path: Path, s1: pl.DataFrame, pairs: pl.DataFrame, ids: pl.DataF
     out.write_csv(path, separator="\t", quote_style="never", line_terminator="\n")
 
 
+def build_matrix(norm_path, cheap_path, s1_ids, rates, path: Path, step=2_000_000):
+    """Stage-1 features for every candidate pair of the given S1 records, written chunk by chunk
+    into a float32 matrix on disk (memory-mapped), so RAM only ever holds one chunk."""
+    sub = pl.scan_parquet(cheap_path).filter(pl.col("i").is_in(s1_ids.implode())).collect()
+    rec, tf = pairfeat.record_table(norm_path), pairfeat.token_freqs(norm_path)
+    X, cols = None, None
+    for s in range(0, len(sub), step):
+        f = pairfeat.full_features(rec, sub.slice(s, step), tf, rates, chunk=step)
+        if X is None:
+            cols = pairfeat.feature_columns(f)
+            X = np.lib.format.open_memmap(path, mode="w+", dtype=np.float32, shape=(len(sub), len(cols)))
+        X[s:s + len(f)] = f.select(cols).to_numpy().astype(np.float32)
+        del f
+        gc.collect()
+    X.flush()
+    keys = sub.select("i", "j")
+    del sub, rec, tf
+    gc.collect()
+    return np.load(path, mmap_mode="r"), keys, cols
+
+
+def predict_rows(model, X, rows=None, step=1_000_000, num_iteration=None) -> np.ndarray:
+    idx = np.arange(X.shape[0]) if rows is None else rows
+    return np.concatenate([model.predict(np.asarray(X[idx[s:s + step]]), num_iteration=num_iteration)
+                           for s in range(0, len(idx), step)])
+
+
+def fit_cv_mm(X, y, groups, args, tag):
+    """Grouped K-fold on a disk-backed matrix: one binned LightGBM dataset, folds as subsets."""
+    params = lgb_params(args)
+    full = lgb.Dataset(X, label=y, params={"max_bin": params["max_bin"], "verbose": -1},
+                       free_raw_data=True).construct()   # True: subsets must not copy raw rows into RAM
+    oof, iters = np.zeros(len(y)), []
+    for k, (a, b) in enumerate(GroupKFold(n_splits=args.folds).split(np.zeros(len(y)), y, groups)):
+        m = lgb.train(params, full.subset(a), 3000, valid_sets=[full.subset(b)],
+                      callbacks=[lgb.early_stopping(50, verbose=False)])
+        oof[b] = predict_rows(m, X, b, num_iteration=m.best_iteration)
+        iters.append(m.best_iteration)
+        log(f"{tag} fold {k}: best_iter={m.best_iteration}")
+        del m
+        gc.collect()
+    model = lgb.train(params, full, int(np.mean(iters) * 1.1))
+    del full
+    gc.collect()
+    return oof, model
+
+
 def fit_cv(X, y, groups, args, tag):
     """Grouped K-fold (by S1 record): out-of-fold predictions plus a model fit on everything."""
     oof, iters = np.zeros(len(y)), []
@@ -115,6 +162,19 @@ def score_pairs(norm_path, cheap_path, model, cols, rates=None, step=3_000_000) 
     return pl.concat(out)
 
 
+def predict_parquet(model, path: Path, cols, step=4_000_000) -> pl.DataFrame:
+    """(i, j, p1, p) for every row of a stage-2 feature parquet, read chunk by chunk."""
+    n = pl.scan_parquet(path).select(pl.len()).collect().item()
+    out = []
+    for s in range(0, n, step):
+        c = pl.scan_parquet(path).slice(s, step).collect()
+        out.append(c.select("i", "j", "p1").with_columns(
+            pl.Series("p", model.predict(c.select(cols).to_numpy().astype(np.float32))).cast(pl.Float32)))
+        del c
+        gc.collect()
+    return pl.concat(out)
+
+
 def predict_frame(model, frame: pl.DataFrame, cols, step=5_000_000) -> np.ndarray:
     return np.concatenate([model.predict(frame.slice(s, step).select(cols).to_numpy().astype(np.float32))
                            for s in range(0, len(frame), step)])
@@ -136,8 +196,8 @@ def main():
     ap.add_argument("--data-dir", required=True)
     ap.add_argument("--cache-dir", default="../../cache")
     ap.add_argument("--out-dir", default="../../output")
-    ap.add_argument("--frac-a", type=float, default=0.2, help="share of train S1 records for the stage-1 model")
-    ap.add_argument("--frac-b", type=float, default=0.2, help="share of train S1 records for the stage-2 model")
+    ap.add_argument("--frac-a", type=float, default=0.35, help="share of train S1 records for the stage-1 model")
+    ap.add_argument("--frac-b", type=float, default=0.35, help="share of train S1 records for the stage-2 model")
     ap.add_argument("--folds", type=int, default=3)
     ap.add_argument("--lr", type=float, default=0.1)
     ap.add_argument("--cap-s1", type=int, default=6)
@@ -166,33 +226,32 @@ def main():
     rates = pairfeat.learn_added_word_rates(norm_path, cheap_path, truth, s1_c)
     rates.write_parquet(cache / "added_word_rates.parquet")
     log(f"added-word rates: {len(rates):,} words from {len(s1_c):,} held-out S1 records")
-    rec, tf = pairfeat.record_table(norm_path), pairfeat.token_freqs(norm_path)
-    feats = pairfeat.full_features(rec, pl.scan_parquet(cheap_path).filter(pl.col("i").is_in(s1_a.implode())).collect(), tf, rates)
-    del rec, tf
-    cols = pairfeat.feature_columns(feats)
-    X, y = feats.select(cols).to_numpy().astype(np.float32), label(feats, truth)
-    keys_a = feats.select("i", "j")
-    del feats
-    gc.collect()
-    log(f"stage 1: {len(X):,} pairs from {len(s1_a):,} S1 records, {y.mean():.3f} positive, {len(cols)} features")
-    oof1, model1 = fit_cv(X, y, keys_a["i"].to_numpy(), args, "stage 1")
+    X, keys_a, cols = build_matrix(norm_path, cheap_path, s1_a, rates, cache / "train_X1.npy")
+    y = label(keys_a, truth)
+    log(f"stage 1: {len(y):,} pairs from {len(s1_a):,} S1 records, {y.mean():.3f} positive, {len(cols)} features")
+    oof1, model1 = fit_cv_mm(X, y, keys_a["i"].to_numpy(), args, "stage 1")
     model1.save_model(str(cache / "model1.txt"))
     del X, y
     gc.collect()
+    (cache / "train_X1.npy").unlink()
     p1 = with_oof(score_pairs(norm_path, cheap_path, model1, cols, rates), keys_a.with_columns(pl.Series("p1", oof1).cast(pl.Float32)), "p1")
 
     # ---------------- train, stage 2: competition + sibling features on sample B
-    f2 = stage2.build(p1, cheap_path, norm_path)
+    f2_path = cache / "train_f2.parquet"
+    stage2.build(p1, cheap_path, norm_path).write_parquet(f2_path)
     del p1
-    cols2 = stage2.columns(f2)
-    fb = f2.filter(pl.col("i").is_in(s1_b.implode()))
+    gc.collect()
+    cols2 = [c for c in pl.read_parquet_schema(f2_path) if c not in ("i", "j")]
+    fb = pl.scan_parquet(f2_path).filter(pl.col("i").is_in(s1_b.implode())).collect()
     X2, y2 = fb.select(cols2).to_numpy().astype(np.float32), label(fb, truth)
     log(f"stage 2: {len(X2):,} pairs from {len(s1_b):,} S1 records, {len(cols2)} features")
     oof2, model2 = fit_cv(X2, y2, fb["i"].to_numpy(), args, "stage 2")
     model2.save_model(str(cache / "model2.txt"))
-    scored = with_oof(f2.select("i", "j", "p1").with_columns(pl.Series("p", predict_frame(model2, f2, cols2))),
-                      fb.select("i", "j").with_columns(pl.Series("p", oof2)), "p")
-    del f2, fb, X2, y2
+    keys_b = fb.select("i", "j").with_columns(pl.Series("p", oof2))
+    del fb, X2, y2
+    gc.collect()
+    scored = with_oof(predict_parquet(model2, f2_path, cols2), keys_b, "p")
+    f2_path.unlink()
     gc.collect()
     scored.write_parquet(cache / "train_scored.parquet")   # for error analysis
     truth_b = truth.filter(pl.col("i").is_in(s1_b.implode()))
@@ -223,10 +282,12 @@ def main():
     if not args.skip_test:
         tnorm_path, tcheap_path = build_split("test", args, cache)
         tp1 = score_pairs(tnorm_path, tcheap_path, model1, cols, rates)
-        tf2 = stage2.build(tp1, tcheap_path, tnorm_path)
+        tf2_path = cache / "test_f2.parquet"
+        stage2.build(tp1, tcheap_path, tnorm_path).write_parquet(tf2_path)
         del tp1
-        tscored = tf2.select("i", "j", "p1").with_columns(pl.Series("p", predict_frame(model2, tf2, cols2)))
-        del tf2
+        gc.collect()
+        tscored = predict_parquet(model2, tf2_path, cols2)
+        tf2_path.unlink()
         gc.collect()
         tscored.write_parquet(cache / "test_scored.parquet")
         matches = decide.apply(tscored.select("i", "j", "p"), best_cfg)
