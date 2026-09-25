@@ -53,11 +53,11 @@ def build_split(split: str, args, cache: Path):
     if not pairs_path.exists():
         cols = ["rid", "src", "country", "core", "name_compact", "addr_nums", "addr_words"]
         block.build_candidates(pl.read_parquet(norm_path, columns=cols), cap_s1=args.cap_s1,
-                               cap_r=args.cap_r, max_per_s1=args.max_per_s1).write_parquet(pairs_path)
+                               cap_r=args.cap_r, max_per_s1=200).write_parquet(pairs_path)
         gc.collect()
     cheap_path = cache / f"{split}_cheap.parquet"
     if not cheap_path.exists():
-        pairfeat.cheap_scores(norm_path, pl.read_parquet(pairs_path)).write_parquet(cheap_path)
+        pairfeat.cheap_scores(norm_path, pl.read_parquet(pairs_path), cap=args.max_per_s1).write_parquet(cheap_path)
         gc.collect()
     log(f"{split}: normalised, blocked, cheap-scored")
     return norm_path, cheap_path
@@ -142,7 +142,7 @@ def main():
     ap.add_argument("--lr", type=float, default=0.1)
     ap.add_argument("--cap-s1", type=int, default=6)
     ap.add_argument("--cap-r", type=int, default=40)
-    ap.add_argument("--max-per-s1", type=int, default=30)
+    ap.add_argument("--max-per-s1", type=int, default=40)
     ap.add_argument("--drop-s1", type=float, default=0.0,
                     help="hide this share of train S1 records (test-like conditions)")
     ap.add_argument("--skip-test", action="store_true")

@@ -57,8 +57,10 @@ def _jacc(a: str, b: str) -> pl.Expr:
     return pl.when(union > 0).then(inter / union).otherwise(None).cast(pl.Float32)
 
 
-def cheap_scores(norm_path, pairs: pl.DataFrame, chunk: int = 5_000_000) -> pl.DataFrame:
-    """Two fast similarities for *every* candidate pair; used for rank/competition features."""
+def cheap_scores(norm_path, pairs: pl.DataFrame, cap: int = 40, chunk: int = 5_000_000) -> pl.DataFrame:
+    """Two fast similarities for every blocked pair, then keep the `cap` best candidates per S1
+    record ranked by similarity + 5 x keys shared (measured on train: F0.5 ceiling 0.9852 at 40,
+    vs 0.9844 ranking by keys alone). Finally add rank/competition features."""
     t = pl.read_parquet(norm_path, columns=["rid", "name_core", "addr_norm"]).sort("rid")
     name, addr = t["name_core"], t["addr_norm"]
     del t
@@ -70,14 +72,17 @@ def cheap_scores(norm_path, pairs: pl.DataFrame, chunk: int = 5_000_000) -> pl.D
             pl.Series("c_name", _cp(name.gather(i).to_list(), name.gather(j).to_list(), fuzz.token_set_ratio)),
             pl.Series("c_addr", _cp(addr.gather(i).to_list(), addr.gather(j).to_list(), fuzz.token_set_ratio))))
     del name, addr
-    p = pl.concat(outs).with_columns(((pl.col("c_name") + pl.col("c_addr")) / 2).alias("c_combo"))
+    p = (pl.concat(outs)
+           .with_columns((pl.col("c_name") + pl.col("c_addr") + 5 * pl.col("n_keys").cast(pl.Float32)).alias("_sc"))
+           .sort(["i", "_sc"], descending=[False, True]).group_by("i", maintain_order=True).head(cap)
+           .drop("_sc").with_columns(((pl.col("c_name") + pl.col("c_addr")) / 2).alias("c_combo")))
     # competition: how does this pair rank for its S1 record, and for its S2/S3 record?
     ex = [pl.len().over("i").cast(pl.UInt16).alias("n_cand_i"), pl.len().over("j").cast(pl.UInt16).alias("n_cand_j")]
     for c in ("n_keys", "c_name", "c_addr", "c_combo"):
         v = pl.col(c).cast(pl.Float32)
-        ex += [v.rank("min", descending=True).over("i").cast(pl.Float32).alias(f"{c}_rank_i"),
+        ex += [v.rank("min", descending=True).over("i").cast(pl.UInt16).alias(f"{c}_rank_i"),
                (v.max().over("i") - v).alias(f"{c}_gap_i"),
-               v.rank("min", descending=True).over("j").cast(pl.Float32).alias(f"{c}_rank_j"),
+               v.rank("min", descending=True).over("j").cast(pl.UInt16).alias(f"{c}_rank_j"),
                (v.max().over("j") - v).alias(f"{c}_gap_j")]
     return p.with_columns(ex)
 
