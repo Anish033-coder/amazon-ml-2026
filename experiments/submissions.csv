@@ -14,4 +14,4 @@ v9,2026-09-25 23:50,81ecec9,submissions/v9_matching_results.tsv.gz,"blocking v7 
 v9-strict,2026-09-25 23:50,81ecec9,submissions/v9-strict_matching_results.tsv.gz,"v9 probabilities, strict decision gamma 2.5 floor 0.4",0.972526
 probe-v9-nofrance,2026-09-26 10:36,81ecec9,submissions/probe-v9-nofrance_matching_results.tsv.gz,diagnostic: v9-strict with France rows blank,0.83952
 v10,2026-09-26 21:03,ef50d45,submissions/v10_matching_results.tsv.gz,"audit fixes: M/s, noise-free keys, fragment/all-number keys, name counts, closest numbers, label-free French words, 35% samples, lr 0.05; OOF 0.9847",
-v10-strict,2026-09-26 21:04,ef50d45,submissions/v10-strict_matching_results.tsv.gz,"v10 probabilities, strict decision gamma 2.5 floor 0.4",
+v10-strict,2026-09-26 21:04,ef50d45,submissions/v10-strict_matching_results.tsv.gz,"v10 probabilities, strict decision gamma 2.5 floor 0.4",0.97858
