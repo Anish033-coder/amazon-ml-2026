@@ -20,7 +20,10 @@ def record_table(norm_path) -> pl.DataFrame:
         pl.len().over("name_core").log1p().cast(pl.Float32).alias("freq_name"),
         pl.len().over("addr_norm").log1p().cast(pl.Float32).alias("freq_addr"),
         (pl.col("src") == 1).sum().over(["country", "compact_key"]).cast(pl.Float32).alias("n_s1_name"),
-        (pl.col("src") != 1).sum().over(["country", "compact_key"]).cast(pl.Float32).alias("n_r_name"))
+        (pl.col("src") != 1).sum().over(["country", "compact_key"]).cast(pl.Float32).alias("n_r_name"),
+        # same count on the full name including the legal suffix: resolves ~14% of address-less
+        # copies whose core name is shared ('Celestina Hardie LCSW' vs 'Celestina Hardie LCSW LLC')
+        (pl.col("src") == 1).sum().over(["country", "name_full"]).cast(pl.Float32).alias("n_s1_full"))
 
 
 def token_freqs(norm_path) -> dict:
@@ -273,6 +276,8 @@ def full_features(rec: pl.DataFrame, pairs: pl.DataFrame, tf: dict, rates: pl.Da
             "num_n_equal": cp["n_eq"].cast(pl.Float32),
             "num_closest_small": ((cp["md"] > 0) & (cp["md"] <= 50)).cast(pl.Float32),
             "n_s1_name_i": L["n_s1_name"], "n_s1_name_j": R["n_s1_name"], "n_r_name_j": R["n_r_name"],
+            "n_s1_full_j": R["n_s1_full"],
+            "full_name_eq": (L["name_full"] == R["name_full"]).cast(pl.Float32),
             "src3": (R["src"] == 3).cast(pl.Int8),
             "freq_name_i": L["freq_name"], "freq_name_j": R["freq_name"],
             "freq_addr_i": L["freq_addr"], "freq_addr_j": R["freq_addr"]})

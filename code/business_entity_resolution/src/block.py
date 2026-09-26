@@ -23,7 +23,7 @@ many keys they share and capped per S1 record.
 import polars as pl
 
 FAMILIES = ("compact", "n1", "nn", "nnum", "numw", "nw", "cnum", "numnum", "numw6", "ww", "compact_e", "nn_e",
-            "cnum_all", "nnum_all", "pp_e", "frag")
+            "cnum_all", "nnum_all", "pp_e", "frag", "mh_name", "mh_name_num", "mh_addr")
 # per-family (cap_s1, cap_r) overrides; others use the build_candidates defaults
 FAMILY_CAPS = {"compact_e": (8, 30), "nn_e": (8, 30), "cnum": (10, 60), "cnum_all": (10, 60), "pp_e": (8, 30)}
 _SHIFT = 1 << 32
@@ -53,6 +53,33 @@ def _pairs_key(a, b, seed, ordered=False):
     if ordered:
         x = x.filter(pl.col("h") < pl.col("h_b"))
     return x.select("rid", pl.struct("h", "h_b").hash(seed=seed).alias("key"))
+
+
+def _minhash_bands(sub: pl.DataFrame, col: str, maxlen: int, n_bands: int, rows: int, seed: int,
+                   chunk: int = 1_500_000) -> pl.DataFrame:
+    """rid, h: one key per LSH band of a MinHash signature over the character 3-grams of `col`.
+    Two strings whose 3-gram sets overlap by Jaccard J share at least one band with probability
+    1 - (1 - J^rows)^n_bands (J=0.5 -> 0.97, J=0.3 -> 0.68 for 12 bands of 2), so typo'd or
+    slightly reworded names still meet, which exact word keys cannot do. Computed in record
+    chunks so memory stays bounded; the result does not depend on the chunking."""
+    n_hash = n_bands * rows
+    out = []
+    for a in range(0, len(sub), chunk):
+        s = sub.slice(a, chunk).select("rid", pl.col(col).str.replace_all(" ", "").str.slice(0, maxlen).alias("s"))
+        grams = []
+        for k in range(maxlen - 2):     # one 3-gram position at a time keeps memory to (rid, u64) rows
+            g = s.select("rid", pl.col("s").str.slice(k, 3).alias("g")).filter(pl.col("g").str.len_chars() == 3)
+            if len(g) == 0:
+                break
+            grams.append(g.select("rid", pl.col("g").hash(seed=17).alias("h")))
+        if not grams:
+            continue
+        grams = pl.concat(grams).unique()
+        sig = grams.group_by("rid").agg([pl.col("h").hash(seed=100 + k).min().alias(f"m{k}") for k in range(n_hash)])
+        del grams
+        out += [sig.select("rid", pl.struct([f"m{b * rows + r}" for r in range(rows)]).hash(seed=seed + b).alias("h"))
+                for b in range(n_bands)]
+    return pl.concat(out)
 
 
 def _family_keys(sub, fam, rare_name, rare_addr, nums, rare_addr6=None, nums3=None, extra=None):
@@ -94,6 +121,12 @@ def _family_keys(sub, fam, rare_name, rare_addr, nums, rare_addr6=None, nums3=No
         return _pairs_key(comp, extra["all_nums"], seed)
     if fam == "nnum_all":   # S1 records: every name word x every number; copies: rare words x every number
         return _pairs_key(extra["name_all"], extra["all_nums"], seed)
+    if fam == "mh_name":    # fuzzy name: MinHash/LSH bands over the name's 3-grams
+        return extra["mh_name"].select("rid", pl.col("h").alias("key"))
+    if fam == "mh_name_num":  # fuzzy name x house number: keeps common names selective
+        return _pairs_key(extra["mh_name6"], nums, seed)
+    if fam == "mh_addr":    # fuzzy address: renamed businesses at a slightly different-looking address
+        return extra["mh_addr"].select("rid", pl.col("h").alias("key"))
     raise ValueError(fam)
 
 
@@ -115,7 +148,12 @@ def _country_candidates(sub, cap_s1, cap_r, max_per_s1, k_name, k_addr, k_num, v
                               .str.replace_all(r"\s+", " ").str.strip_chars())
                 .filter(pl.col("f").str.contains(r"\d") & (pl.col("f").str.len_chars() >= 2))
                 .select("rid", pl.col("f").hash(seed=13).alias("h")).unique())
-    extra = {"all_nums": all_nums, "name_all": name_all, "prefix": prefix, "frags": frags}
+    mh_name = _minhash_bands(sub, "compact_key", 40, 12, 2, seed=2000)
+    mh_name6 = _minhash_bands(sub, "compact_key", 40, 6, 2, seed=2000)      # first 6 bands, same hashes
+    mh_addr = _minhash_bands(sub.filter(pl.col("addr_raw") != ""), "addr_raw_lc", 48, 10, 3, seed=3000) \
+        if "addr_raw_lc" in sub.columns else None
+    extra = {"all_nums": all_nums, "name_all": name_all, "prefix": prefix, "frags": frags,
+             "mh_name": mh_name, "mh_name6": mh_name6, "mh_addr": mh_addr}
     empty_r = sub.filter((pl.col("src") != 1) & (pl.col("addr_words").list.len() == 0)
                          & (pl.col("addr_nums").list.len() == 0)).select("rid")
     codes = []
@@ -150,6 +188,7 @@ def build_candidates(df: pl.DataFrame, cap_s1: int = 6, cap_r: int = 40, max_per
         sub = df.filter(pl.col("country") == c).select(cols)
         if verbose:
             print(f"  country={c}: {len(sub):,} records", flush=True)
+        sub = sub.with_columns(pl.col("addr_raw").str.to_lowercase().str.replace_all(r"[^a-z0-9]+", "").alias("addr_raw_lc"))
         out.append(_country_candidates(sub, cap_s1, cap_r, max_per_s1, k_name, k_addr, k_num, verbose))
     return pl.concat(out)
 
