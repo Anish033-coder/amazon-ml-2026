@@ -6,7 +6,7 @@ from rapidfuzz import fuzz, process
 from rapidfuzz.distance import JaroWinkler, Levenshtein
 
 # string columns only: token lists are rebuilt per chunk, which keeps memory low
-REC_COLS = ["rid", "src", "name_core", "name_full", "name_compact", "name_legal",
+REC_COLS = ["rid", "src", "country", "name_core", "name_full", "name_compact", "compact_key", "name_legal",
             "addr_norm", "addr_numstr", "addr_wordstr", "addr_first_num", "name_was_indic"]
 
 
@@ -14,9 +14,13 @@ def record_table(norm_path) -> pl.DataFrame:
     """Per-record columns needed for features, plus split-level frequency counts
     (chains share a name across addresses; malls share an address across names)."""
     t = pl.read_parquet(norm_path, columns=REC_COLS).sort("rid")
+    # how many S1 records carry exactly this name: an address-less copy of a name held by one S1
+    # record matches ~97% of the time on train, by two ~47%, by three ~31%
     return t.with_columns(
         pl.len().over("name_core").log1p().cast(pl.Float32).alias("freq_name"),
-        pl.len().over("addr_norm").log1p().cast(pl.Float32).alias("freq_addr"))
+        pl.len().over("addr_norm").log1p().cast(pl.Float32).alias("freq_addr"),
+        (pl.col("src") == 1).sum().over(["country", "compact_key"]).cast(pl.Float32).alias("n_s1_name"),
+        (pl.col("src") != 1).sum().over(["country", "compact_key"]).cast(pl.Float32).alias("n_r_name"))
 
 
 def token_freqs(norm_path) -> dict:
@@ -39,15 +43,45 @@ def learn_added_word_rates(norm_path, cheap_path, truth: pl.DataFrame, s1_ids: p
     from .normalize import LEGAL
     c = (pl.scan_parquet(cheap_path).select("i", "j", "c_name")
            .filter(pl.col("i").is_in(s1_ids.implode()) & (pl.col("c_name") >= 60)).collect())
-    core = pl.read_parquet(norm_path, columns=["rid", "core"])
-    c = (c.join(core.rename({"rid": "i", "core": "ci"}), on="i").join(core.rename({"rid": "j", "core": "cj"}), on="j")
+    core = pl.read_parquet(norm_path, columns=["rid", "core", "addr_first_num"])
+    c = (c.join(core.rename({"rid": "i", "core": "ci", "addr_first_num": "hi"}), on="i")
+          .join(core.rename({"rid": "j", "core": "cj", "addr_first_num": "hj"}), on="j")
           .join(truth.with_columns(pl.lit(1, pl.Int8).alias("y")), on=["i", "j"], how="left")
           .with_columns(pl.col("y").fill_null(0),
                         pl.col("cj").list.set_difference("ci").list.eval(
                             pl.element().filter(~pl.element().is_in(list(LEGAL)))).alias("w")))
-    w = c.select("w", "y").explode("w").drop_nulls("w")
-    return (w.group_by("w").agg(pl.len().alias("n"), pl.col("y").mean().cast(pl.Float32).alias("rate"))
-             .filter(pl.col("n") >= min_n).rename({"w": "tok"}))
+    return _word_table(c, min_n)
+
+
+def _word_table(c: pl.DataFrame, min_n: int, with_y: bool = True) -> pl.DataFrame:
+    """Per added word: count, share of pairs whose first house numbers are equal, and (train) match rate."""
+    c = c.with_columns(((pl.col("hi") == pl.col("hj")) & (pl.col("hi") != "")).alias("eq"))
+    w = c.select(["w", "eq"] + (["y"] if with_y else [])).explode("w").drop_nulls("w")
+    agg = [pl.len().alias("n"), pl.col("eq").mean().cast(pl.Float32).alias("eq_share")]
+    if with_y:
+        agg.append(pl.col("y").mean().cast(pl.Float32).alias("rate"))
+    return w.group_by("w").agg(agg).filter(pl.col("n") >= min_n).rename({"w": "tok"})
+
+
+def estimate_unseen_rates(norm_path, cheap_path, train_rates: pl.DataFrame, min_n: int = 100) -> pl.DataFrame:
+    """Label-free match rates for added words never seen in training (e.g. French 'fils', 'associe').
+    On train, noise words that the data adds to real copies share the house number ~72-75% of the
+    time and sister-business words ~5-22% (correlation with the match rate 0.79). So the equal-number
+    share of an unseen word, measured on the unlabelled split, is mapped to the median train rate of
+    words with a similar share."""
+    from .normalize import LEGAL
+    c = pl.scan_parquet(cheap_path).select("i", "j", "c_name").filter(pl.col("c_name") >= 60).collect()
+    rec = pl.read_parquet(norm_path, columns=["rid", "core", "addr_first_num"])
+    c = (c.join(rec.rename({"rid": "i", "core": "ci", "addr_first_num": "hi"}), on="i")
+          .join(rec.rename({"rid": "j", "core": "cj", "addr_first_num": "hj"}), on="j")
+          .with_columns(pl.col("cj").list.set_difference("ci").list.eval(
+              pl.element().filter(~pl.element().is_in(list(LEGAL)))).alias("w")))
+    t = _word_table(c, min_n, with_y=False).join(train_rates.select("tok"), on="tok", how="anti")
+    bins = [0.0, 0.3, 0.45, 0.6, 1.01]
+    ref = (train_rates.with_columns(pl.col("eq_share").cut(bins[1:-1], labels=["b0", "b1", "b2", "b3"]).alias("bin"))
+                      .group_by("bin").agg(pl.col("rate").median().alias("rate")))
+    return (t.with_columns(pl.col("eq_share").cut(bins[1:-1], labels=["b0", "b1", "b2", "b3"]).alias("bin"))
+             .join(ref, on="bin", how="left").select("tok", "n", "eq_share", "rate"))
 
 
 def _added_word_stats(added: pl.Series, dropped: pl.Series, rates: pl.DataFrame) -> pl.DataFrame:
@@ -223,7 +257,22 @@ def full_features(rec: pl.DataFrame, pairs: pl.DataFrame, tf: dict, rates: pl.Da
                              _freq_stats(dw["w_da"], tf["addr"], "w_extra_s1"), _freq_stats(dw["w_db"], tf["addr"], "w_extra_r")]
                             + ([_added_word_stats(dw["n_db"], dw["n_da"], rates)] if rates is not None else []),
                             how="horizontal")
+        # closest pair of numbers across the two addresses: 'P. No. 65' vs 'H.no 39 P. No. 65' share 65,
+        # while a sister business sits 1-50 numbers away (7% match rate on train)
+        kk = pl.int_range(len(p), dtype=pl.UInt32, eager=True).alias("k")
+        da = pl.DataFrame([kk, L["addr_numstr"].str.split(" ").alias("a")]).explode("a")
+        db = pl.DataFrame([kk, R["addr_numstr"].str.split(" ").alias("b")]).explode("b")
+        da = da.with_columns(pl.col("a").str.extract(r"(\d+)").cast(pl.Int64, strict=False)).drop_nulls()
+        db = db.with_columns(pl.col("b").str.extract(r"(\d+)").cast(pl.Int64, strict=False)).drop_nulls()
+        cp = (da.join(db, on="k").group_by("k").agg((pl.col("a") - pl.col("b")).abs().min().alias("md"),
+                                                   (pl.col("a") == pl.col("b")).sum().alias("n_eq")))
+        cp = pl.DataFrame([kk]).join(cp, on="k", how="left", maintain_order="left")
         extra = pl.DataFrame({
+            "num_min_diff_log": cp["md"].cast(pl.Float32).log1p(),
+            "num_any_equal": (cp["n_eq"] > 0).cast(pl.Float32),
+            "num_n_equal": cp["n_eq"].cast(pl.Float32),
+            "num_closest_small": ((cp["md"] > 0) & (cp["md"] <= 50)).cast(pl.Float32),
+            "n_s1_name_i": L["n_s1_name"], "n_s1_name_j": R["n_s1_name"], "n_r_name_j": R["n_r_name"],
             "src3": (R["src"] == 3).cast(pl.Int8),
             "freq_name_i": L["freq_name"], "freq_name_j": R["freq_name"],
             "freq_addr_i": L["freq_addr"], "freq_addr_j": R["freq_addr"]})

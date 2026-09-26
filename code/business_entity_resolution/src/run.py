@@ -51,7 +51,7 @@ def build_split(split: str, args, cache: Path):
             gc.collect()
     pairs_path = cache / f"{split}_pairs.parquet"
     if not pairs_path.exists():
-        cols = ["rid", "src", "country", "core", "name_compact", "addr_nums", "addr_words"]
+        cols = ["rid", "src", "country", "core_key", "compact_key", "addr_nums", "addr_words", "addr_raw"]
         block.build_candidates(pl.read_parquet(norm_path, columns=cols), cap_s1=args.cap_s1,
                                cap_r=args.cap_r, max_per_s1=200).write_parquet(pairs_path)
         gc.collect()
@@ -208,6 +208,11 @@ def label(frame: pl.DataFrame, truth: pl.DataFrame) -> np.ndarray:
 def predict_test(args, cache: Path, model1, model2, cols, cols2, rates, best_cfg, row: dict):
     """Normalise, block and score the test split with trained models, then write the outputs."""
     tnorm_path, tcheap_path = build_split("test", args, cache)
+    unseen = pairfeat.estimate_unseen_rates(tnorm_path, tcheap_path, rates)
+    unseen.write_parquet(cache / "test_unseen_word_rates.parquet")
+    log(f"label-free rates for {len(unseen):,} added words unseen in training "
+        f"(e.g. {unseen.sort('n', descending=True).head(5).select('tok', 'eq_share', 'rate').rows()})")
+    rates = pl.concat([rates.select("tok", "rate"), unseen.select("tok", "rate")])
     tp1 = score_pairs(tnorm_path, tcheap_path, model1, cols, rates)
     tf2_path = cache / "test_f2.parquet"
     stage2.build(tp1, tcheap_path, tnorm_path, tf2_path)

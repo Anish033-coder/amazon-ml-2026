@@ -13,7 +13,7 @@ from pathlib import Path
 import polars as pl
 from anyascii import anyascii
 
-from .normalize import ADDR_DROP, ADDR_MAP, LEGAL, NAME_DROP, NAME_MAP, PHRASES
+from .normalize import ADDR_DROP, ADDR_MAP, LEGAL, NAME_DROP, NAME_MAP, NAME_NOISE, PHRASES
 
 INDIC = r"[ऀ-෿]"
 _INDIC_RE = re.compile(INDIC)
@@ -133,9 +133,11 @@ def _name_typo_map(tokens: pl.Series) -> dict:
     out = {}
     for t in vocab:
         u = t
-        if any(ch.isdigit() for ch in t) and sum(ch.isalpha() for ch in t) >= max(2, len(t) // 2) and not t[0].isdigit() \
-                or (t[:1] in "015" and len(t) >= 3 and sum(ch.isalpha() for ch in t) >= len(t) - 1):
-            u = t.translate(_LEET)
+        n_dig = sum(ch.isdigit() for ch in t)
+        if (n_dig and sum(ch.isalpha() for ch in t) >= max(2, len(t) // 2) and not t[0].isdigit()) \
+                or (t[:1] in "015" and len(t) >= 3 and sum(ch.isalpha() for ch in t) >= len(t) - 1) \
+                or (len(t) == 2 and n_dig == 1 and any(ch in "015" for ch in t) and t[-1] not in "0123456789" or t in ("c0",)):
+            u = t.translate(_LEET)          # also short ones: '0m' -> 'om', 'c0' -> 'co'
         if len(u) >= 6 and u not in _LEGAL_LONG:
             # letter swaps count as one edit ('pirvate'); a guard on first and last letters keeps
             # real words such as 'compass' or 'limiter' from being pulled onto a legal word
@@ -179,7 +181,9 @@ def normalize(df: pl.DataFrame, table: dict) -> pl.DataFrame:
     df = df.with_columns(
         # phone numbers stuck into names ('Cobalt LLC - 5023041431'); names only, since
         # addresses legitimately hold long digit runs ('14200 -14300', '253-45 147')
-        _clean(pl.col("n_src").str.replace_all(r"\+?\d[\d\s-]{8,}\d", " ")).alias("n_clean"),
+        _clean(pl.col("n_src").str.replace_all(r"\+?\d[\d\s-]{8,}\d", " ")
+                   # 'M/s', 'M/S.', 'Messrs' (Indian 'Messieurs' prefix) would otherwise leave stray 'm' 's' tokens
+                   .str.replace_all(r"(?i)\bm\s*/\s*s\b\.?|\bmessrs\b\.?", " ")).alias("n_clean"),
         _clean(pl.col("a_src").str.replace_all(r"(?i)\b(?:p\.?\s?o\.?\s*box|pmb|pob)\s*#?\s*\d+", " ")).alias("a_clean"),
         (pl.col("n_src") != pl.col("name_raw")).alias("name_was_indic"))
 
@@ -201,7 +205,11 @@ def normalize(df: pl.DataFrame, table: dict) -> pl.DataFrame:
         pl.col(c).fill_null(empty) for c in ("name_toks", "legal", "core", "addr_toks", "addr_nums", "addr_words"))
     df = df.with_columns(
         pl.when(pl.col("core").list.len() > 0).then("core").otherwise("name_toks").alias("core"))
+    # blocking keys use the name without noise words ('Indo Royal Consultants Center' ~ 'Indo Royal Consultants')
+    df = df.with_columns(pl.col("core").list.eval(pl.element().filter(~pl.element().is_in(list(NAME_NOISE)))).alias("core_key"))
+    df = df.with_columns(pl.when(pl.col("core_key").list.len() > 0).then("core_key").otherwise("core").alias("core_key"))
     return df.with_columns(
+        pl.col("core_key").list.join("").alias("compact_key"),
         pl.col("core").list.join(" ").alias("name_core"),
         pl.col("name_toks").list.join(" ").alias("name_full"),
         pl.col("legal").list.join(" ").alias("name_legal"),

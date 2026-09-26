@@ -21,8 +21,8 @@ a = ap.parse_args()
 c = Path(a.cache_dir)
 norm = c / "train_norm.parquet"
 t = time.time()
-pairs = block.build_candidates(pl.read_parquet(norm, columns=["rid", "src", "country", "core", "name_compact",
-                                                              "addr_nums", "addr_words"]), max_per_s1=200)
+pairs = block.build_candidates(pl.read_parquet(norm, columns=["rid", "src", "country", "core_key", "compact_key",
+                                                              "addr_nums", "addr_words", "addr_raw"]), max_per_s1=200)
 print(f"blocking {time.time() - t:.0f}s, {len(pairs):,} pairs before the cut", flush=True)
 if a.save:
     pairs.write_parquet(a.save)

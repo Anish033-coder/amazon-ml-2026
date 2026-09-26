@@ -111,6 +111,11 @@ ADDR_MAP = {
 }
 ADDR_MAP.update(US_STATES)
 ADDR_MAP.update(IN_STATES)
-ADDR_DROP = {"cedex", "the", "of", "de", "du", "des", "la", "le", "les", "d", "l"}
+ADDR_DROP = {"cedex", "the", "of", "de", "du", "des", "la", "le", "les", "d", "l",
+             "null", "cdp"}            # '<NULL>' placeholders and the census 'CDP' suffix are not address content
+# abbreviations and frequent misspellings observed on matched training pairs
+ADDR_MAP.update({"fort": "ft", "cove": "cv", "mount": "mt", "ridge": "rdg", "raod": "rd", "rad": "rd", "stret": "st"})
+# words the data adds to real copies of a name (learned match rates ~20-57%): not part of a name key
+NAME_NOISE = {"svc", "ctr", "partner", "dr", "mr", "smt", "shri", "sri", "ms"}
 LANDMARK = {"near", "opp", "behind", "beside", "besides", "next", "adjacent", "above",
             "below", "landmark", "facing", "front"}
