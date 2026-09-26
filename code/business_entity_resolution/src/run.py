@@ -128,6 +128,19 @@ def predict_rows(model, X, rows=None, step=1_000_000, num_iteration=None) -> np.
                            for s in range(0, len(idx), step)])
 
 
+class _Rows(lgb.Sequence):
+    """Rows of a disk-backed matrix (optionally a subset) streamed to LightGBM batch by batch."""
+    def __init__(self, X, rows=None, batch_size=200_000):
+        self.X, self.rows, self.batch_size = X, rows, batch_size
+
+    def __getitem__(self, idx):
+        r = self.rows[idx] if self.rows is not None else idx
+        return np.asarray(self.X[r], dtype=np.float64)   # LightGBM sequences must yield float64
+
+    def __len__(self):
+        return len(self.rows) if self.rows is not None else self.X.shape[0]
+
+
 def fit_cv_mm(X, y, groups, args, tag):
     """Grouped K-fold on a disk-backed matrix: one binned LightGBM dataset, folds as subsets."""
     params = lgb_params(args)
@@ -142,7 +155,9 @@ def fit_cv_mm(X, y, groups, args, tag):
         log(f"{tag} fold {k}: best_iter={m.best_iteration}")
         del m
         gc.collect()
-    model = lgb.train(params, full, int(np.mean(iters) * 1.1))
+    n_final = int(np.mean(iters) * 1.1)
+    model = lgb.train(params, full, n_final)
+    model.n_final = n_final
     del full
     gc.collect()
     return oof, model
@@ -238,6 +253,48 @@ def predict_test(args, cache: Path, model1, model2, cols, cols2, rates, best_cfg
 
 
 
+def self_train_france(args, cache: Path, share: float = 0.5, hi: float = 0.95, lo: float = 0.05):
+    """Self-training for the country with no labels (France), which the organisers allow.
+    Simulated on train (India's labels hidden, US labels only): pseudo-labels from confident
+    pairs raised India's F0.5 from 0.9643 to 0.9676, about a fifth of the gap to an in-domain
+    model. The stage-1 model is retrained on its training sample plus confident pairs of half
+    the France S1 records, and saved as model1_st.txt."""
+    d = json.loads((cache / "decision.json").read_text())
+    cols, n_rounds = d["cols"], d["iters1"]
+    rates = pl.read_parquet(cache / "added_word_rates.parquet")
+    tnorm, tcheap = cache / "test_norm.parquet", cache / "test_cheap.parquet"
+    unseen = pairfeat.estimate_unseen_rates(tnorm, tcheap, rates)
+    rates_t = pl.concat([rates.select("tok", "rate"), unseen.select("tok", "rate")])
+    tmeta = pl.read_parquet(tnorm, columns=["rid", "src", "country"])
+    fr = tmeta.filter((pl.col("src") == 1) & (pl.col("country") == "france"))["rid"]
+    if len(fr) == 0:
+        log("no France records: skipping self-training")
+        return
+    fr = fr.sample(fraction=share, seed=SEED + 3).sort()
+    XF, kF, colsF = build_matrix(tnorm, tcheap, fr, rates_t, cache / "st_fr.npy")
+    assert colsF == cols, "feature columns differ between train and test"
+    model1 = lgb.Booster(model_file=str(cache / "model1.txt"))
+    pF = predict_rows(model1, XF)
+    conf = np.nonzero((pF >= hi) | (pF <= lo))[0]
+    yF = (pF[conf] >= hi).astype(np.int8)
+    log(f"France pseudo-labels: {len(conf):,} of {len(pF):,} pairs ({len(conf) / len(pF):.1%}), {yF.mean():.3f} positive")
+    norm_path, cheap_path = cache / "train_norm.parquet", cache / "train_cheap.parquet"
+    truth = truth_rid(norm_path, args.data_dir)
+    meta = pl.read_parquet(norm_path, columns=["rid", "src"]).filter(pl.col("src") == 1)
+    s1_a = meta["rid"].sample(fraction=d.get("frac_a", args.frac_a), seed=SEED).sort()
+    XA, kA, _ = build_matrix(norm_path, cheap_path, s1_a, rates, cache / "train_X1.npy")
+    yA = label(kA, truth)
+    ds = lgb.Dataset([_Rows(XA), _Rows(XF, conf)], label=np.concatenate([yA, yF]),
+                     params={"max_bin": lgb_params(args)["max_bin"], "verbose": -1})
+    m = lgb.train(lgb_params(args), ds, n_rounds)
+    m.save_model(str(cache / "model1_st.txt"))
+    log(f"self-trained stage-1 model saved ({n_rounds} rounds on {len(yA):,} labelled + {len(yF):,} pseudo-labelled pairs)")
+    del XA, XF, ds, m
+    gc.collect()
+    for f in ("st_fr.npy", "train_X1.npy"):
+        (cache / f).unlink()
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data-dir", required=True)
@@ -253,7 +310,7 @@ def main():
     ap.add_argument("--drop-s1", type=float, default=0.0,
                     help="hide this share of train S1 records (test-like conditions)")
     ap.add_argument("--skip-test", action="store_true")
-    ap.add_argument("--stage", default="all", choices=["all", "test-build", "predict"],
+    ap.add_argument("--stage", default="all", choices=["all", "test-build", "self-train", "predict"],
                     help="test-build: only normalise/block/cheap-score test; predict: score test with saved models")
     ap.add_argument("--log", default="../../experiments/log.csv")
     ap.add_argument("--note", default="")
@@ -265,10 +322,16 @@ def main():
         build_split("test", args, cache)
         log(f"done in {time.time() - t0:.0f}s")
         return
+    if args.stage == "self-train":
+        self_train_france(args, cache)
+        log(f"done in {time.time() - t0:.0f}s")
+        return
     if args.stage == "predict":
         d = json.loads((cache / "decision.json").read_text())
         row = {"time": time.strftime("%Y-%m-%d %H:%M"), "note": args.note}
-        predict_test(args, cache, lgb.Booster(model_file=str(cache / "model1.txt")),
+        m1 = cache / "model1_st.txt" if (cache / "model1_st.txt").exists() else cache / "model1.txt"
+        log(f"stage-1 model: {m1.name}")
+        predict_test(args, cache, lgb.Booster(model_file=str(m1)),
                      lgb.Booster(model_file=str(cache / "model2.txt")), d["cols"], d["cols2"],
                      pl.read_parquet(cache / "added_word_rates.parquet"), d["cfg"], row)
         log(f"done in {time.time() - t0:.0f}s")
@@ -325,7 +388,8 @@ def main():
     for c in meta["country"].unique().sort():
         ids = meta.filter((pl.col("country") == c) & pl.col("rid").is_in(s1_b.implode()))["rid"]
         log(f"  country={c:<8} F0.5={decide.macro_f05(pred.filter(pl.col('i').is_in(ids.implode())), truth_b, ids):.4f}")
-    (cache / "decision.json").write_text(json.dumps({"cfg": best_cfg, "cols": cols, "cols2": cols2}))
+    (cache / "decision.json").write_text(json.dumps({"cfg": best_cfg, "cols": cols, "cols2": cols2,
+                                                    "iters1": model1.n_final, "frac_a": args.frac_a}))
     imp = sorted(zip(model2.feature_importance("gain"), cols2), reverse=True)[:10]
     log("stage-2 top features: " + ", ".join(c for _, c in imp))
     del scored, pred, truth

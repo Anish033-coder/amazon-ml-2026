@@ -72,12 +72,41 @@ def sibling_features(scored: pl.DataFrame, name: pl.Series, addr: pl.Series, chu
         pl.when(has).then(pl.col("sib_addr")).otherwise(None).alias("sib_addr"))
 
 
+def consensus_features(ch: pl.DataFrame, rec: pl.DataFrame) -> pl.DataFrame:
+    """For each S1 group, the copies stage 1 is most sure about (p1 > 0.5) define a consensus
+    house number and name; a sister business sits a few doors from that consensus."""
+    g = ch.select("i", "j", "p1").join(rec, on="j", how="left")
+    strong = g.filter(pl.col("p1") > 0.5)
+    num = (strong.filter(pl.col("addr_first_num") != "").group_by("i", "addr_first_num").agg(pl.col("p1").sum().alias("w"))
+                 .sort(["i", "w"], descending=[False, True]).group_by("i", maintain_order=True).first()
+                 .select("i", pl.col("addr_first_num").alias("cons_num")))
+    name = (strong.group_by("i", "compact_key").agg(pl.col("p1").sum().alias("w"))
+                  .sort(["i", "w"], descending=[False, True]).group_by("i", maintain_order=True).first()
+                  .select("i", pl.col("compact_key").alias("cons_name")))
+    g = g.join(num, on="i", how="left").join(name, on="i", how="left")
+    ni = pl.col("addr_first_num").str.extract(r"^(\d+)").cast(pl.Int64, strict=False)
+    nc = pl.col("cons_num").str.extract(r"^(\d+)").cast(pl.Int64, strict=False)
+    strong_i = (pl.col("p1") > 0.5).cast(pl.Int32)
+    return g.select(
+        "i", "j",
+        pl.when((pl.col("addr_first_num") == "") | pl.col("cons_num").is_null()).then(None)
+          .otherwise((pl.col("addr_first_num") == pl.col("cons_num")).cast(pl.Float32)).alias("cons_num_eq"),
+        (ni - nc).abs().cast(pl.Float32).log1p().alias("cons_num_offset_log"),
+        pl.when(pl.col("cons_name").is_null()).then(None)
+          .otherwise((pl.col("compact_key") == pl.col("cons_name")).cast(pl.Float32)).alias("cons_name_eq"),
+        (strong_i.sum().over(["i", "compact_key"]) - strong_i).cast(pl.Float32).alias("cons_same_name_n"),
+        (strong_i.sum().over(["i", "addr_first_num"]) - strong_i).cast(pl.Float32).alias("cons_same_num_n"),
+        pl.when(pl.col("addr_norm") != "").then(strong_i.sum().over(["i", "addr_norm"]) - strong_i)
+          .cast(pl.Float32).alias("cons_same_addr_n"))
+
+
 def build(scored: pl.DataFrame, cheap_path, norm_path, out_path, n_chunks: int = 8):
     """scored: (i, j, p1) for every candidate pair of a split. Writes the stage-2 feature table to
     out_path, processing complete S1 groups in n_chunks slices so memory stays bounded."""
     js = j_stats(scored)
-    t = pl.read_parquet(norm_path, columns=["rid", "name_core", "addr_norm"]).sort("rid")
+    t = pl.read_parquet(norm_path, columns=["rid", "name_core", "addr_norm", "compact_key", "addr_first_num"]).sort("rid")
     name, addr = t["name_core"], t["addr_norm"]
+    rec = t.select(pl.col("rid").alias("j"), "compact_key", "addr_first_num", "addr_norm")
     del t
     edges = np.linspace(0, int(scored["i"].max()) + 1, n_chunks + 1).astype(np.int64)
     parts = []
@@ -85,7 +114,7 @@ def build(scored: pl.DataFrame, cheap_path, norm_path, out_path, n_chunks: int =
         ch = scored.filter((pl.col("i") >= edges[k]) & (pl.col("i") < edges[k + 1]))
         if len(ch) == 0:
             continue
-        g = group_features(ch, js)
+        g = group_features(ch, js).join(consensus_features(ch, rec), on=["i", "j"], how="left")
         sib = sibling_features(ch, name, addr)
         cheap = (pl.scan_parquet(cheap_path).select(["i", "j"] + STAGE2_CHEAP)
                    .filter((pl.col("i") >= edges[k]) & (pl.col("i") < edges[k + 1])).collect())
