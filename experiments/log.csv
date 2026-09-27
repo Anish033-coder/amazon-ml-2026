@@ -7,3 +7,4 @@ time,commit,note,pair_recall,all_found_share,cands_per_s1,sample_frac,oof_f05,de
 2026-09-25 21:03,97b761a,"v7: blocking v7 (asymmetric keys, ww, empty-address ranking) + phone stripping",0.9664,0.8993,33.54,0.2/0.2,0.9794,"{""method"": ""expected_f"", ""one_owner"": true, ""gamma"": 1.0, ""floor"": 0.1}",34.48,
 2026-09-25 22:13,efac4fe,v8: v7 + learned added-word rates,0.9664,0.8993,33.54,0.2/0.2,0.9796,"{""method"": ""expected_f"", ""one_owner"": true, ""gamma"": 1.0, ""floor"": 0.0}",34.48,
 2026-09-26 18:25,2b8c2d2,v10 train: audit fixes,0.9745,0.9179,34.19,0.35/0.35,0.9847,"{""method"": ""expected_f"", ""one_owner"": true, ""gamma"": 1.0, ""floor"": 0.2}",,
+2026-09-27 00:16,8d224c9,"v11 train: MinHash keys, full-name + consensus features",0.9796,0.933,39.1,0.2/0.2,0.9865,"{""method"": ""expected_f"", ""one_owner"": true, ""gamma"": 1.0, ""floor"": 0.2}",,
