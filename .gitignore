@@ -11,3 +11,4 @@ output_synthetic/
 cache/
 experiments/*.log
 submissions/
+output_*/
