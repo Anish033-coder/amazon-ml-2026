@@ -1,6 +1,6 @@
 # ML Challenge 2026: Business Entity Resolution Solution Template
 
-**Team Name:** [TEAM NAME]
+**Team Name:** Null_pointers
 **Team Members:** Anish Kumawat (leader), Sushant Verma, Prasoon Patel, Pranav Panmand — IIIT Lucknow
 **Submission Date:** 27 September 2026
 
