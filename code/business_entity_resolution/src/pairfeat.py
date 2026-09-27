@@ -96,10 +96,12 @@ def estimate_unseen_rates(norm_path, cheap_path, train_rates: pl.DataFrame, trai
     train_ref = pure_add_word_stats() on train with labels. There, every word whose equal-number
     share is <= 0.6 matches 0% of the time (sister-business words: 'hldg', 'grp', 'public') and
     words above it ~93% ('svc', 'ctr', 'shri'). An unseen word's share, measured the same way on
-    the unlabelled split, is mapped to the pair-weighted train rate of its 0.1-wide share bin."""
+    the unlabelled split, is mapped to the median train rate of its 0.1-wide share bin. The median
+    keeps sister words at exactly 0, as every sister word is on train: a mean pulled up by one
+    'partner'-like word (0.016) reads to the model as a noise word, not a sister."""
     edges = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
     ref = (train_ref.with_columns(pl.col("eq_share").cut(edges).alias("bin"))
-                    .group_by("bin").agg(((pl.col("rate") * pl.col("n")).sum() / pl.col("n").sum()).cast(pl.Float32).alias("rate")))
+                    .group_by("bin").agg(pl.col("rate").median().cast(pl.Float32).alias("rate")))
     t = pure_add_word_stats(norm_path, cheap_path, None, min_n).join(train_rates.select("tok"), on="tok", how="anti")
     t = t.with_columns(pl.col("eq_share").cut(edges).alias("bin")).join(ref, on="bin", how="left")
     # a bin without train words takes the rate of the nearest train word by share
