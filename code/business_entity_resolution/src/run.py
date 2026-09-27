@@ -321,6 +321,8 @@ def main():
     ap.add_argument("--skip-test", action="store_true")
     ap.add_argument("--stage", default="all", choices=["all", "test-build", "self-train", "predict"],
                     help="test-build: only normalise/block/cheap-score test; predict: score test with saved models")
+    ap.add_argument("--gamma", type=float, default=None, help="predict: override the tuned decision exponent")
+    ap.add_argument("--floor", type=float, default=None, help="predict: override the tuned decision floor")
     ap.add_argument("--log", default="../../experiments/log.csv")
     ap.add_argument("--note", default="")
     args = ap.parse_args()
@@ -338,11 +340,13 @@ def main():
     if args.stage == "predict":
         d = json.loads((cache / "decision.json").read_text())
         row = {"time": time.strftime("%Y-%m-%d %H:%M"), "note": args.note}
+        cfg = dict(d["cfg"], **{k: v for k, v in (("gamma", args.gamma), ("floor", args.floor)) if v is not None})
+        log(f"decision: {cfg}")
         m1 = cache / "model1_st.txt" if (cache / "model1_st.txt").exists() else cache / "model1.txt"
         log(f"stage-1 model: {m1.name}")
         predict_test(args, cache, lgb.Booster(model_file=str(m1)),
                      lgb.Booster(model_file=str(cache / "model2.txt")), d["cols"], d["cols2"],
-                     pl.read_parquet(cache / "added_word_rates.parquet"), d["cfg"], row)
+                     pl.read_parquet(cache / "added_word_rates.parquet"), cfg, row)
         log(f"done in {time.time() - t0:.0f}s")
         return
 

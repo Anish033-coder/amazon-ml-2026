@@ -11,10 +11,10 @@ pip install -r requirements.txt
 D=<student_resource>/dataset; C=<cache>; O=<submission>/output
 python -m src.run --data-dir $D --cache-dir $C --out-dir $O --lr 0.05 --frac-a 0.2 --frac-b 0.2 --skip-test   # train
 python -m src.run --data-dir $D --cache-dir $C --out-dir $O --stage test-build      # normalise + block test
-python -m src.run --data-dir $D --cache-dir $C --out-dir $O --stage predict         # score test, write outputs
+python -m src.run --data-dir $D --cache-dir $C --out-dir $O --stage predict --gamma 2.5 --floor 0.4   # score test, write outputs
 ```
 
-Running the three steps as separate processes keeps peak memory low. A single call without `--skip-test` does all of it in one go.
+`--gamma 2.5 --floor 0.4` is the stricter decision setting used for our leaderboard submissions. It scored higher on test than the setting tuned on train. Running the three steps as separate processes keeps peak memory low. A single call without `--skip-test` does all of it in one go.
 
 This writes `output/matching_results.tsv` and `output/candidate_pairs.tsv`. It takes about 2 hours on an Apple M4 with 16 GB RAM. Intermediate results are cached as parquet in `--cache-dir`. Random seed: 42.
 

@@ -18,4 +18,4 @@ v10-strict,2026-09-26 21:04,ef50d45,submissions/v10-strict_matching_results.tsv.
 probe-v10-nofrance,2026-09-26 21:22,ef50d45,submissions/probe-v10-nofrance_matching_results.tsv.gz,diagnostic: v10-strict with France rows blank,
 v11,2026-09-27 11:07,8d224c9,submissions/v11_matching_results.tsv.gz,"v11: MinHash blocking, full-name counts, consensus stage 2, France self-training, 20% samples; OOF 0.9865",
 v11-strict,2026-09-27 11:07,8d224c9,submissions/v11-strict_matching_results.tsv.gz,"v11 probabilities, strict decision gamma 2.5 floor 0.4",0.976138
-v14-strict,2026-09-27 13:07,37e3eda,submissions/v14-strict_matching_results.tsv.gz,"v11 models, no self-training, stable label-free French word rates (median bins), strict decision",
+v14-strict,2026-09-27 13:07,37e3eda,submissions/v14-strict_matching_results.tsv.gz,"v11 models, no self-training, stable label-free French word rates (median bins), strict decision",0.978992

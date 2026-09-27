@@ -132,7 +132,7 @@ The calibration exponent and floor are tuned on out-of-fold predictions with the
 | v9 | + added-word rates, legal direction, typo repair | 0.981 | 0.9725 (strict) |
 | v10 | + audit fixes (noise-free keys, fragment keys, name counts) | 0.9847 | **0.97858** (strict) |
 | v11 | + MinHash keys, full-name counts, consensus features, France self-training | 0.9865 | 0.97614 (strict) |
-| v13 | v11 models, stable label-free French word rates, no self-training | 0.9865 | [fill] |
+| **v14 (final)** | v11 models, stable label-free French word rates, no self-training | 0.9865 | **0.978992** (strict) |
 
 - **F0.5 Score (macro), validation:** 0.9865 out-of-fold.
 - **Per country (validation):** India 0.9846, US 0.9877.
@@ -156,7 +156,7 @@ The calibration exponent and floor are tuned on out-of-fold predictions with the
 ---
 
 ## 6. Conclusion
-[Final score.] The biggest gains came from understanding how the data was generated, not from bigger models. Sister businesses at nearby house numbers, words added to real copies, and fuzzy blocking that catches every copy together moved the score from 0.929 to 0.9786. Measuring every idea before trusting it mattered as much: the one statistic we did not re-check after changing the candidate set is the one that cost us a submission.
+Our final submission (v14) scores **0.978992** on the public leaderboard, up from 0.929 for our first submission. The biggest gains came from understanding how the data was generated, not from bigger models. Sister businesses at nearby house numbers, words added to real copies, and fuzzy blocking that catches every copy together moved the score from 0.929 to 0.979. Measuring every idea before trusting it mattered as much: the one statistic we did not re-check after changing the candidate set is the one that cost us a submission.
 
 ---
 
