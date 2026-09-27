@@ -131,14 +131,19 @@ The calibration exponent and floor are tuned on out-of-fold predictions with the
 | v6 | + house-number offsets, wider blocking | 0.977 | 0.963 (strict) |
 | v9 | + added-word rates, legal direction, typo repair | 0.981 | 0.9725 (strict) |
 | v10 | + audit fixes (noise-free keys, fragment keys, name counts) | 0.9847 | **0.97858** (strict) |
-| v11 | + MinHash keys, consensus features, **France self-training** | 0.9865 | 0.97614 (strict) |
-| v12 | v11 **without** self-training | 0.9865 | [fill] |
+| v11 | + MinHash keys, full-name counts, consensus features, France self-training | 0.9865 | 0.97614 (strict) |
+| v13 | v11 models, stable label-free French word rates, no self-training | 0.9865 | [fill] |
 
 - **F0.5 Score (macro), validation:** 0.9865 out-of-fold.
 - **Per country (validation):** India 0.9846, US 0.9877.
   - France has no labels. We uploaded a probe with the France rows blanked and derived France ≈ 0.944 (v9).
   - Using out-of-fold US/India scores, v10's leaderboard score implies France ≈ 0.95.
-- **Self-training lesson:** pseudo-labelling confident France pairs helped in a US→India simulation, but hurt France on the leaderboard (≈ 0.95 → 0.93). The retrained model learned that "same brand word + same street" is a match. It then linked different French businesses such as *Aven Federation* / *Aven Sportive*. We dropped it.
+- **The v11 lesson:**
+  - v11 improved out-of-fold F0.5 but lost on the leaderboard.
+  - Links per S1 changed exactly as on train for India and the US, but France gained 5× more links.
+  - SHAP contributions on French pairs that flipped from p1 < 0.1 to > 0.9 pointed to the label-free rate of the added word. Our estimator had pushed French descriptor words ("école", "comité", "sportive") across a coarse step, from rate 0 to 0.28, because the larger candidate set changed the statistic.
+  - We rebuilt the estimator on near-identical pure additions, where train labels show a clean split (share ≤ 0.6 → 0% match, above → ~93%).
+  - Self-training was also dropped: it amplified the error.
 - **Common false positives (wrong merges):**
   - a sister business at a nearby house number that shares the brand word
   - chain names with an empty address
@@ -151,7 +156,7 @@ The calibration exponent and floor are tuned on out-of-fold predictions with the
 ---
 
 ## 6. Conclusion
-[Final score.] The biggest gains came from understanding how the data was generated, not from bigger models. Sister businesses at nearby house numbers, words added to real copies, and fuzzy blocking that catches every copy together moved the score from 0.929 to 0.9786. Measuring every idea before trusting it mattered as much: our one unmeasured assumption, that self-training transfers to France, was the one that failed.
+[Final score.] The biggest gains came from understanding how the data was generated, not from bigger models. Sister businesses at nearby house numbers, words added to real copies, and fuzzy blocking that catches every copy together moved the score from 0.929 to 0.9786. Measuring every idea before trusting it mattered as much: the one statistic we did not re-check after changing the candidate set is the one that cost us a submission.
 
 ---
 

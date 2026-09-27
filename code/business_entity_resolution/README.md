@@ -73,7 +73,14 @@ Complete S1 records use more of their words than their (often truncated) S2/S3 c
 
 The settings are chosen on out-of-fold predictions with the exact macro F0.5 metric.
 
-**Tried and rejected: self-training for France.** France appears only in test. `--stage self-train` retrains stage 1 with pseudo-labels from confident France pairs. In a simulation (train on US only, pseudo-label India) this helped. On the real test set it made the model link different French businesses that share a brand word and an address (`Aven Federation` vs `Aven Sportive`). The leaderboard score dropped from 0.97858 to 0.97614. The final submission does not use it: `predict` uses `model1_st.txt` only if that file exists, and the three reproduction steps above never create it.
+**Label-free rates for unseen words (French).** France appears only in test, so French words such as `ecole`, `sportive` or `fils` have no learned match rate. Their rate is estimated from test without labels:
+- Take near-identical pairs (name and address similarity ≥ 70) where the S2/S3 name adds exactly this one word and both records have a house number.
+- Measure how often the house numbers are equal.
+- Map that share to a rate using the same statistic measured on train with labels. On train, every word with a share ≤ 0.6 matches 0% of the time (sister-business words); words above it match about 93% (noise words the data adds to real copies).
+
+An earlier version measured the share on all pairs with name similarity ≥ 60 and used a coarse step. Adding more candidates (v11) pushed French descriptor words across the step: `ecole` went from rate 0 to 0.28. The model then linked different businesses at one address (`Aven Federation` / `Aven Sportive`), and the leaderboard dropped from 0.97858 to 0.97614. We found the cause with SHAP contributions on the changed pairs.
+
+**Tried and not used: self-training for France.** `--stage self-train` retrains stage 1 with pseudo-labels from confident France pairs. It helped in a US → India simulation, but on test it amplified the error above. The final submission does not use it: `predict` uses `model1_st.txt` only if that file exists, and the three reproduction steps above never create it.
 
 ## Compliance with the challenge rules
 
@@ -85,7 +92,7 @@ The settings are chosen on out-of-fold predictions with the exact macro F0.5 met
   - the list of noise words
 - **Unsupervised statistics on the provided test files,** which the organisers' Q&A permits:
   - token frequencies, name counts and blocking keys
-  - label-free rates for added words never seen in training, from the share of pairs with equal house numbers
+  - label-free rates for added words never seen in training, from the share of near-identical pairs with equal house numbers
 - **Hand-written rules only.** `normalize.py` contains small hand-written normalisation dictionaries: abbreviations, legal forms, and state name → code. The organisers' Q&A permits these.
 - **Model license.** The only models are LightGBM (MIT), trained from scratch. No pretrained weights are used.
 - **Libraries.** All libraries are pure-algorithm and permissively licensed (see `requirements.txt`).

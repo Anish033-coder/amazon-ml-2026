@@ -223,7 +223,7 @@ def label(frame: pl.DataFrame, truth: pl.DataFrame) -> np.ndarray:
 def predict_test(args, cache: Path, model1, model2, cols, cols2, rates, best_cfg, row: dict):
     """Normalise, block and score the test split with trained models, then write the outputs."""
     tnorm_path, tcheap_path = build_split("test", args, cache)
-    unseen = pairfeat.estimate_unseen_rates(tnorm_path, tcheap_path, rates)
+    unseen = pairfeat.estimate_unseen_rates(tnorm_path, tcheap_path, rates, pure_add_ref(cache, args.data_dir))
     unseen.write_parquet(cache / "test_unseen_word_rates.parquet")
     log(f"label-free rates for {len(unseen):,} added words unseen in training "
         f"(e.g. {unseen.sort('n', descending=True).head(5).select('tok', 'eq_share', 'rate').rows()})")
@@ -253,6 +253,15 @@ def predict_test(args, cache: Path, model1, model2, cols, cols2, rates, best_cfg
 
 
 
+def pure_add_ref(cache: Path, data_dir) -> pl.DataFrame:
+    """Train reference for label-free word rates (see pairfeat.estimate_unseen_rates), cached."""
+    path = cache / "pure_add_train_ref.parquet"
+    if not path.exists():
+        norm_path = cache / "train_norm.parquet"
+        pairfeat.pure_add_word_stats(norm_path, cache / "train_cheap.parquet", truth_rid(norm_path, data_dir)).write_parquet(path)
+    return pl.read_parquet(path)
+
+
 def self_train_france(args, cache: Path, share: float = 0.5, hi: float = 0.95, lo: float = 0.05):
     """Self-training for the country with no labels (France), which the organisers allow.
     Simulated on train (India's labels hidden, US labels only): pseudo-labels from confident
@@ -263,7 +272,7 @@ def self_train_france(args, cache: Path, share: float = 0.5, hi: float = 0.95, l
     cols, n_rounds = d["cols"], d["iters1"]
     rates = pl.read_parquet(cache / "added_word_rates.parquet")
     tnorm, tcheap = cache / "test_norm.parquet", cache / "test_cheap.parquet"
-    unseen = pairfeat.estimate_unseen_rates(tnorm, tcheap, rates)
+    unseen = pairfeat.estimate_unseen_rates(tnorm, tcheap, rates, pure_add_ref(cache, args.data_dir))
     rates_t = pl.concat([rates.select("tok", "rate"), unseen.select("tok", "rate")])
     tmeta = pl.read_parquet(tnorm, columns=["rid", "src", "country"])
     fr = tmeta.filter((pl.col("src") == 1) & (pl.col("country") == "france"))["rid"]
@@ -349,6 +358,8 @@ def main():
     s1_c = meta.filter(~pl.col("rid").is_in(s1_a.implode()) & ~pl.col("rid").is_in(s1_b.implode()))["rid"]
     rates = pairfeat.learn_added_word_rates(norm_path, cheap_path, truth, s1_c)
     rates.write_parquet(cache / "added_word_rates.parquet")
+    (cache / "pure_add_train_ref.parquet").unlink(missing_ok=True)
+    pure_add_ref(cache, args.data_dir)
     log(f"added-word rates: {len(rates):,} words from {len(s1_c):,} held-out S1 records")
     X, keys_a, cols = build_matrix(norm_path, cheap_path, s1_a, rates, cache / "train_X1.npy")
     y = label(keys_a, truth)

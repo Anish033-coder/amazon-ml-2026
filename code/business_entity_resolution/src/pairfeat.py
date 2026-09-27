@@ -66,25 +66,47 @@ def _word_table(c: pl.DataFrame, min_n: int, with_y: bool = True) -> pl.DataFram
     return w.group_by("w").agg(agg).filter(pl.col("n") >= min_n).rename({"w": "tok"})
 
 
-def estimate_unseen_rates(norm_path, cheap_path, train_rates: pl.DataFrame, min_n: int = 100) -> pl.DataFrame:
-    """Label-free match rates for added words never seen in training (e.g. French 'fils', 'associe').
-    On train, noise words that the data adds to real copies share the house number ~72-75% of the
-    time and sister-business words ~5-22% (correlation with the match rate 0.79). So the equal-number
-    share of an unseen word, measured on the unlabelled split, is mapped to the median train rate of
-    words with a similar share."""
+def pure_add_word_stats(norm_path, cheap_path, truth: pl.DataFrame = None, min_n: int = 100) -> pl.DataFrame:
+    """Per word: how often it is the *only* difference between two near-identical records
+    (name and address similarity >= 70, nothing dropped, both with a house number), the share of
+    those pairs whose house numbers are equal, and (with labels) their match rate. Restricting
+    to near-identical pure additions keeps the statistic stable when the candidate set changes;
+    on train it tracks the match rate with correlation 0.88."""
     from .normalize import LEGAL
-    c = pl.scan_parquet(cheap_path).select("i", "j", "c_name").filter(pl.col("c_name") >= 60).collect()
+    c = (pl.scan_parquet(cheap_path).select("i", "j", "c_name", "c_addr")
+           .filter((pl.col("c_name") >= 70) & (pl.col("c_addr") >= 70)).collect())
     rec = pl.read_parquet(norm_path, columns=["rid", "core", "addr_first_num"])
     c = (c.join(rec.rename({"rid": "i", "core": "ci", "addr_first_num": "hi"}), on="i")
           .join(rec.rename({"rid": "j", "core": "cj", "addr_first_num": "hj"}), on="j")
           .with_columns(pl.col("cj").list.set_difference("ci").list.eval(
-              pl.element().filter(~pl.element().is_in(list(LEGAL)))).alias("w")))
-    t = _word_table(c, min_n, with_y=False).join(train_rates.select("tok"), on="tok", how="anti")
-    bins = [0.0, 0.3, 0.45, 0.6, 1.01]
-    ref = (train_rates.with_columns(pl.col("eq_share").cut(bins[1:-1], labels=["b0", "b1", "b2", "b3"]).alias("bin"))
-                      .group_by("bin").agg(pl.col("rate").median().alias("rate")))
-    return (t.with_columns(pl.col("eq_share").cut(bins[1:-1], labels=["b0", "b1", "b2", "b3"]).alias("bin"))
-             .join(ref, on="bin", how="left").select("tok", "n", "eq_share", "rate"))
+                            pl.element().filter(~pl.element().is_in(list(LEGAL)))).alias("add"),
+                        pl.col("ci").list.set_difference("cj").list.len().alias("ndrop"))
+          .filter((pl.col("add").list.len() == 1) & (pl.col("ndrop") == 0) & (pl.col("hi") != "") & (pl.col("hj") != ""))
+          .select("i", "j", pl.col("add").list.first().alias("tok"), (pl.col("hi") == pl.col("hj")).alias("eq")))
+    agg = [pl.len().alias("n"), pl.col("eq").mean().cast(pl.Float32).alias("eq_share")]
+    if truth is not None:
+        c = c.join(truth.with_columns(pl.lit(1, pl.Int8).alias("y")), on=["i", "j"], how="left").with_columns(pl.col("y").fill_null(0))
+        agg.append(pl.col("y").mean().cast(pl.Float32).alias("rate"))
+    return c.group_by("tok").agg(agg).filter(pl.col("n") >= min_n)
+
+
+def estimate_unseen_rates(norm_path, cheap_path, train_rates: pl.DataFrame, train_ref: pl.DataFrame,
+                          min_n: int = 100) -> pl.DataFrame:
+    """Label-free match rates for added words never seen in training (e.g. French 'fils', 'ecole').
+    train_ref = pure_add_word_stats() on train with labels. There, every word whose equal-number
+    share is <= 0.6 matches 0% of the time (sister-business words: 'hldg', 'grp', 'public') and
+    words above it ~93% ('svc', 'ctr', 'shri'). An unseen word's share, measured the same way on
+    the unlabelled split, is mapped to the pair-weighted train rate of its 0.1-wide share bin."""
+    edges = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+    ref = (train_ref.with_columns(pl.col("eq_share").cut(edges).alias("bin"))
+                    .group_by("bin").agg(((pl.col("rate") * pl.col("n")).sum() / pl.col("n").sum()).cast(pl.Float32).alias("rate")))
+    t = pure_add_word_stats(norm_path, cheap_path, None, min_n).join(train_rates.select("tok"), on="tok", how="anti")
+    t = t.with_columns(pl.col("eq_share").cut(edges).alias("bin")).join(ref, on="bin", how="left")
+    # a bin without train words takes the rate of the nearest train word by share
+    near = train_ref.sort("eq_share").select(pl.col("eq_share").alias("ref_share"), pl.col("rate").alias("near_rate"))
+    t = (t.sort("eq_share").join_asof(near, left_on="eq_share", right_on="ref_share", strategy="nearest")
+          .with_columns(pl.col("rate").fill_null(pl.col("near_rate"))))
+    return t.select("tok", "n", "eq_share", "rate")
 
 
 def _added_word_stats(added: pl.Series, dropped: pl.Series, rates: pl.DataFrame) -> pl.DataFrame:
