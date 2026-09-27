@@ -9,7 +9,7 @@ For every Source 1 record, find the matching Source 2 and Source 3 records. The 
 python -m venv .venv && source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 D=<student_resource>/dataset; C=<cache>; O=<submission>/output
-python -m src.run --data-dir $D --cache-dir $C --out-dir $O --lr 0.05 --skip-test   # train
+python -m src.run --data-dir $D --cache-dir $C --out-dir $O --lr 0.05 --frac-a 0.2 --frac-b 0.2 --skip-test   # train
 python -m src.run --data-dir $D --cache-dir $C --out-dir $O --stage test-build      # normalise + block test
 python -m src.run --data-dir $D --cache-dir $C --out-dir $O --stage predict         # score test, write outputs
 ```
@@ -43,6 +43,7 @@ Indic-script words (Devanagari, Tamil, Bengali, Kannada, …) are converted with
 - pairs of address words, pairs of numbers
 - exact address fragments that contain a number (`e 2 8`, `cts 102`)
 - 4-letter prefixes of name words, for copies without an address
+- MinHash signatures (locality-sensitive hashing) over character 3-grams of the name, the name + house number and the address, which catch copies whose every word carries a typo
 
 Complete S1 records use more of their words than their (often truncated) S2/S3 copies. Name keys drop noise words that the data adds to real copies (Services, Center, honorifics). A key is used only when its block is small. Candidates are then ranked by name + address similarity and keys shared, and capped at 40 per S1 record. `candidate_pairs.tsv` is exactly the set the models score.
 
@@ -56,20 +57,23 @@ Complete S1 records use more of their words than their (often truncated) S2/S3 c
 - house numbers:
   - equality, and the offset of the first and of the closest pair of numbers (a sister business sits a few doors away)
   - numbers shared
-- how many S1 records and S2/S3 records carry exactly this name; how common the name and address are in the split
+- how many S1 records and S2/S3 records carry exactly this name (with and without noise words); how common the name and address are in the split
 - competition features: rank and score gap of a pair within its S1 group and its S2/S3 group
 
 **Stage-2 features:**
 - the stage-1 probability
 - its rank, gap and share within the S1 group
 - the best competing S1 for the same S2/S3 record
-- agreement with the S1 record's other likely matches
+- agreement with the S1 record's other likely matches (name and address similarity)
+- consensus: the house number and name shared by the copies stage 1 is most sure about, and whether this candidate agrees with them (a sister business sits a few doors from the consensus)
 
 **Decision.** Per S1 record:
 - each S2/S3 record keeps only its best S1 (in the training labels no S2/S3 record matches two S1 records)
 - then choose the top-k that maximises expected F0.5, or predict "no match"
 
 The settings are chosen on out-of-fold predictions with the exact macro F0.5 metric.
+
+**Tried and rejected: self-training for France.** France appears only in test. `--stage self-train` retrains stage 1 with pseudo-labels from confident France pairs. In a simulation (train on US only, pseudo-label India) this helped. On the real test set it made the model link different French businesses that share a brand word and an address (`Aven Federation` vs `Aven Sportive`). The leaderboard score dropped from 0.97858 to 0.97614. The final submission does not use it: `predict` uses `model1_st.txt` only if that file exists, and the three reproduction steps above never create it.
 
 ## Compliance with the challenge rules
 
